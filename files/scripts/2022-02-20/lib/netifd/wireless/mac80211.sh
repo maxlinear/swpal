@@ -116,6 +116,7 @@ drv_mac80211_init_device_config() {
 	config_add_boolean \
 		acs_policy \
 		acs_bw_comparison \
+		acs_6g_punct_mode \
 		acs_strict_chanlist \
 		acs_exclude_dfs
 	config_add_int acs_switch_thresh acs_noise_threshold acs_unii4
@@ -972,7 +973,7 @@ mac80211_hostapd_setup_base() {
 	json_get_vars \
 		acs_penalty_factors acs_noise_threshold acs_chan_cust_penalty \
 		acs_grp_priorities_throughput acs_grp_priorities_reach acs_unii4 \
-		acs_policy acs_switch_thresh acs_bw_comparison acs_strict_chanlist acs_exclude_dfs \
+		acs_policy acs_switch_thresh acs_bw_comparison acs_6g_punct_mode acs_strict_chanlist acs_exclude_dfs \
 		power_mode
 
 	[ -n "$acs_penalty_factors" ] && append base_cfg "acs_penalty_factors=$acs_penalty_factors" "$N"
@@ -983,6 +984,7 @@ mac80211_hostapd_setup_base() {
 	[ -n "$acs_policy" ] && append base_cfg "acs_policy=$acs_policy" "$N"
 	[ -n "$acs_switch_thresh" ] && append base_cfg "acs_switch_thresh=$acs_switch_thresh" "$N"
 	[ -n "$acs_bw_comparison" ] && append base_cfg "acs_bw_comparison=$acs_bw_comparison" "$N"
+	[ -n "$acs_6g_punct_mode" ] && append base_cfg "acs_6g_punct_mode=$acs_6g_punct_mode" "$N"
 	[ -n "$acs_strict_chanlist" ] && append base_cfg "acs_strict_chanlist=$acs_strict_chanlist" "$N"
 	[ -n "$acs_exclude_dfs" ] && append base_cfg "acs_exclude_dfs=$acs_exclude_dfs" "$N"
 	[ -n "$acs_unii4" ] && append base_cfg "acs_unii4=$acs_unii4" "$N"

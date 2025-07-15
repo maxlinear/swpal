@@ -401,6 +401,7 @@ hostapd_common_add_bss_config() {
 
 	config_add_boolean rsn_preauth auth_cache
 	config_add_int ieee80211w
+	config_add_boolean disable_pbac
 	config_add_boolean beacon_protection_enabled
 	config_add_boolean disable_bigtk_rekey
 	config_add_string group_mgmt_cipher
@@ -713,7 +714,7 @@ hostapd_set_bss_options() {
 		venue_type venue_group hessid sae_require_mfp management_frames_rate \
 		sBridgeMode sAddPeerAP bss_beacon_int sFwrdUnkwnMcast \
 		dynamic_multicast_mode dynamic_multicast_rate sae_pwe \
-		beacon_protection_enabled disable_bigtk_rekey group_mgmt_cipher \
+		beacon_protection_enabled disable_pbac disable_bigtk_rekey group_mgmt_cipher \
 		soft_block_acl_enable soft_block_acl_wait_time soft_block_acl_allow_time \
 		soft_block_acl_on_auth_req soft_block_acl_on_probe_req event_cache_interval \
 		colocated_6g_radio_info ul_csa rnr_auto_update ap_protected_keep_alive_required \
@@ -749,6 +750,7 @@ hostapd_set_bss_options() {
 	set_default enable_hairpin 0
 	set_default greylist 0
 	set_default multi_ap 0
+	set_default disable_pbac 1
 
 	append bss_conf "ctrl_interface=/var/run/hostapd" "$N"
 	[ -n "$ctrl_interface_group" ] && {
@@ -1407,6 +1409,8 @@ hostapd_set_bss_options() {
 						append bss_conf "assoc_sa_query_retry_timeout=$ieee80211w_retry_timeout" "$N"
 					[ -n "$beacon_protection_enabled" ] && \
 						append bss_conf "beacon_protection_enabled=$beacon_protection_enabled" "$N"
+					[ -n "$disable_pbac" ] && \
+						append bss_conf "disable_pbac=$disable_pbac" "$N"
 					[ -n "$disable_bigtk_rekey" ] && \
 						append bss_conf "disable_bigtk_rekey=$disable_bigtk_rekey" "$N"
 					[ -n "$group_mgmt_cipher" ] && \

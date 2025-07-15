@@ -4,8 +4,12 @@
 check_peerlist_on_all_vaps()
 {
         local total_count=0
-        radio=`echo "$1" | cut -d"." -f1`
-        vaps=`uci show wireless | grep ifname | grep $radio | cut -d"=" -f2 |grep "\." | tr -d "'"`
+		if [ "$OS_NAME" != "UPDK" ]; then
+			radio=`echo "$1" | cut -d"." -f1`
+        	vaps=`uci show wireless | grep ifname | grep $radio | cut -d"=" -f2 |grep "\." | tr -d "'"`
+		else
+        	vaps=`ifconfig | grep $1 | cut -d" " -f1 | grep "\."`
+		fi
         for i in $vaps
         do
 		local count=`run_dwpal_cli_cmd $i peerlist | grep "peer(s) connected" | awk '{print $1}'`

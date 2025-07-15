@@ -81,8 +81,8 @@ function zip_confs(){
 
 function save_logs()
 {
-	# Save info from user and daemon logs to /var/log
-	cat $IN_FILES | grep $MATCHES | sort -k4n -k1M -k2n -k3 > $WLAN_LOG_FILE_PATH
+	# Save info from user and daemon logs to /var/log (not needed for UPDK)
+	[ "$OS_NAME" != "UPDK" ] && cat $IN_FILES | grep $MATCHES | sort -k4n -k1M -k2n -k3 > $WLAN_LOG_FILE_PATH
 
 	# data path debug info
 	[ -d /sys/kernel/debug/tmu ] && echo m -1 > /sys/kernel/debug/tmu/eqt # part of /var/log/

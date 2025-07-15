@@ -2,12 +2,10 @@
 
 . /lib/wifi/platform_dependent_common.sh
 
-export OS_NAME="UGW"
+export OS_NAME="UPDK"
 export BINDIR="/opt/intel/bin"
 export SCRIPTS_PATH="/opt/intel/wave/scripts"
-export ETC_CONFIG_WIRELESS_PATH="/etc/config/wireless"
 export DEV_CREAT_PATH="/dev"
-export DEFAULT_DB_PATH="/opt/intel/wave/db"
 export UCI_DB_PATH="/etc/config"
 export BUSYBOX_BIN_PATH="/bin"
 export NC_COMMAND="/bin/lite_nc"
@@ -17,8 +15,8 @@ export CERTIFICATION_FILE_PATH="/opt/intel/wave/certification_enabled"
 export DEFAULT_IP_ADDRESS="192.168.1.1"
 export RADIO_MAP_FILE_1="/etc/radio_map_file"
 export RADIO_MAP_FILE="/opt/intel/wave/radio_map_file"
-# generic writable directory for scripts which need to store state
-export PERSISTENT_STORAGE="/etc"
+export PWHM="/etc/init.d/prplmesh_whm"
+export ODL_FILE_PATH="/etc/config/wld/odl/wld.odl"
 
 ## for wlan debug collect
 export WLAN_LOG_FILE_NAME=wlanLog
@@ -38,9 +36,10 @@ export BEEROCKS_LOG=/tmp/beerocks/logs/
 export DUMP_LOC=/opt/intel/wave
 export DB_LOC=/etc
 export DB_LOC_NAME=config
-export CONF_LOC=/var/run
+export CONF_LOC=/tmp
 export NVRAM_LOGS_LOC=""
 export VAR_LOGS_LOC=/var/log
+export ODL_LOC=/etc/amx/wld
 
 export DUMP_UTIL=/opt/intel/bin/dump_handler
 export JOURNALCTRL_UTIL=""
@@ -62,6 +61,7 @@ export IN_FILES=$(echo "$module1_LogFile $module2_LogFile $module3_LogFile $modu
 export MATCHES="$module1\|$module2\|$module3\|$module4"
 
 export brlan="br-lan"
+export lan="lan"
 
 #functions
 
@@ -88,17 +88,7 @@ function update_mac_address_if_needed(){
 }
 
 function init_prog(){
-		# Workaround for WLANRTSYS-85818 - After AP reboot $USER is not set to root and hence disablig seamless factory and using full factory reset. Which causes vaps not to create and interface will go down.
-		# When PPID of platform_dependent_ugw.sh script is process id of sigma-ap.sh, i.e, platform_dependent_ugw.sh script is called by sigma-ap.sh, making the user variable as sigma-ap's user.
-		# No impact when platform_dependent_ugw.sh script is called by any other script as PPID will not match with sigma process id.
-		sigma_psid=`ps | grep sigma-ap.sh | grep -v grep | awk '{ print $1 }'`
-		sigma_user=`ps | grep sigma-ap.sh | grep -v grep | awk '{ print $2 }'`
-		if [ $PPID = $sigma_psid ]; then
-			local_user=$sigma_user
-		else
-			local_user=$USER
-		fi
-        if [ "$local_user" != "root" ]; then
+        if [ "$USER" != "root" ]; then
                 print_logs "can't use seamless factory on non-root user"
                 print_logs "using full factory"
                 PROG="ugw"

@@ -269,6 +269,7 @@ hostapd_prepare_device_config() {
 	set_default testbed_mode 0
 	set_default sPowerSelection "$txpower"
 	set_default dynamic_edca 1
+	set_default dynamic_wmm 1
 
 	case "$sPowerSelection" in
 		"6") sPowerSelection=12 ;;
@@ -479,6 +480,7 @@ hostapd_common_add_bss_config() {
 
 	config_add_boolean rsn_preauth auth_cache
 	config_add_int ieee80211w
+	config_add_boolean disable_pbac
 	config_add_boolean beacon_protection_enabled
 	config_add_string 'ap_mld_mac:macaddr'
 	config_add_boolean disable_bigtk_rekey
@@ -935,7 +937,7 @@ hostapd_set_bss_options() {
 		venue_type venue_group hessid sae_require_mfp management_frames_rate \
 		sBridgeMode sAddPeerAP bss_beacon_int sFwrdUnkwnMcast \
 		dynamic_multicast_mode dynamic_multicast_rate sae_pwe \
-		beacon_protection_enabled disable_bigtk_rekey group_mgmt_cipher colocated_6g_radio_info \
+		beacon_protection_enabled disable_pbac disable_bigtk_rekey group_mgmt_cipher colocated_6g_radio_info \
 		soft_block_acl_enable soft_block_acl_wait_time soft_block_acl_allow_time \
 		soft_block_acl_on_auth_req soft_block_acl_on_probe_req rnr_auto_update ul_csa \
 		roaming_consortium_0 roaming_consortium_1 roaming_consortium_2 \
@@ -977,6 +979,7 @@ hostapd_set_bss_options() {
 	set_default enable_hairpin 0
 	set_default greylist 0
 	set_default multi_ap 0
+	set_default disable_pbac 1
 
 	append bss_conf "ctrl_interface=/var/run/hostapd" "$N"
 	[ -n "$ctrl_interface_group" ] && {
@@ -1720,6 +1723,8 @@ hostapd_set_bss_options() {
 						append bss_conf "assoc_sa_query_retry_timeout=$ieee80211w_retry_timeout" "$N"
 					[ -n "$beacon_protection_enabled" ] && \
 						append bss_conf "beacon_protection_enabled=$beacon_protection_enabled" "$N"
+					[ -n "$disable_pbac" ] && \
+						append bss_conf "disable_pbac=$disable_pbac" "$N"
 					[ -n "$disable_bigtk_rekey" ] && \
 						append bss_conf "disable_bigtk_rekey=$disable_bigtk_rekey" "$N"
 					[ -n "$group_mgmt_cipher" ] && \

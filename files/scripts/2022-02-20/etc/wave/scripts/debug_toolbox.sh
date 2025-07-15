@@ -203,6 +203,10 @@ wav_certification()
 		if [ "$OS_NAME" = "UGW" ]
 		then
 				br_ip=`uci get network.lan.ipaddr`
+		elif [ "$OS_NAME" = "UPDK" ]
+		then
+				br_ip=`ubus-cli IP.Interface.$lan.IPv4Address.$lan.IPAddress?`
+				br_ip=`echo $br_ip | cut -d"=" -f2`
 		else
 				br_ip=`dmcli eRT setv Device.X_CISCO_COM_DeviceControl.LanManagementEntry.1.LanIPAddress`
 				br_ip=${br_ip##*value: }
@@ -219,6 +223,10 @@ wav_certification()
 			echo "param:IPAddress: :$br_ip" >> /tmp/cert_ip_change.txt
 			echo "param:SubnetMask: :255.255.0.0" >> /tmp/cert_ip_change.txt
 			caltest -s /tmp/cert_ip_change.txt -c SERVD
+	elif [ "$OS_NAME" = "UPDK" ]
+	then
+			ubus-cli IP.Interface.$lan.IPv4Address.$lan.IPAddress=$br_ip
+			ubus-cli IP.Interface.$lan.IPv4Address.$lan.SubnetMask=255.255.0.0
 	else
 			ifconfig brlan0 $br_ip netmask 255.255.0.0
 	fi
@@ -234,14 +242,16 @@ wav_certification()
 	sleep 10
 
 	#Restart the network in order to have the number_of_debug_configs updated for the cert mode
-	echo "Restarting network service ..."
-	if [ "$OS_NAME" = "UGW" ]; then
-		ap_tmp=`/etc/init.d/network restart`
-	elif [ "$OS_NAME" = "RDKB" ]; then
-		ap_tmp=`systemctl restart systemd-netifd.service`
-	fi
+	if [ "$OS_NAME" != "UPDK"]; then
+		echo "Restarting network service ..."
+		if [ "$OS_NAME" = "UGW" ]; then
+			ap_tmp=`/etc/init.d/network restart`
+		elif [ "$OS_NAME" = "RDKB" ]; then
+			ap_tmp=`systemctl restart systemd-netifd.service`
+		fi
 
-	echo "Network Restart DONE"
+		echo "Network Restart DONE"
+	fi
 }
 
 driver_debug()
@@ -381,6 +391,49 @@ wlan_fw_logger_600_D2_BIT_SET_table()
 	echo -e ">> 00 - CONTINUE"
 }
 
+wlan_fw_logger_700_HW_FIFO_table()
+{
+	echo -e "                      0            1            2             3                4             5"
+	echo -e "1-7-HWCommonFIFO1     HostTXIn     QMRxLists    TxLib         RxPP             Band0Activity QMTXMPDUBand1"
+	echo -e "2-8-HWCommonFIFO2     HostTXOut    QMRxdata     TxLib         RxPP             Band1Activity QMTXMPDUBand0"
+	echo -e "3-9-HWCommonFIFO3     HostRXIn     QMTxLists    RXLib         TxAger           QMDMA         QMRXMPDUBand1"
+	echo -e "4-10-HWCommonFIFO4    HostRxOut    QMTXData     RXLib         TxAger           HostIfTxINAQM QMRXMPDUBand0"
+	echo -e "5-11-HWBand0/2FIFO1   BAAStatsCntr Security     PreAgg        MUbitMapSelector BSRC          BestRU "
+	echo -e "6-12-HWBand0/2FIFO2   Classifier   Reserved     OTFA          MULocker         Reserved      Reserved "
+	echo -e "7-13-HWBand0/2FIFO3   RXHCDeagg    BFParser     TXHC          Locker           BAA           Reserved"
+	echo -e "8-14-HWBand0/2FIFO4   Coordinator  PSSetting    TXPDAcc       TxSelBitmap      DeliaLegacy   Reserved "
+	echo -e "9-15-HWBand0/2FIFO5   AutoResp     BAAStatsCntr TFGen         Sequencer        PlanLocker    AlphaPHY"
+	echo -e "10-16-HWBand0/2FIFO6  BSRC         Alpha        DeliaAutoFill TxH              Beacon        RXC"
+	echo -e "11-17-HWBand1/2FIFO1  BAAStatsCntr Security     PreAgg        MUbitMapSelector BSRC          BestRU"
+	echo -e "12-18-HWBand1/2FIFO2  Classifier   Reserved     OTFA          MULocker         Reserved      Reserved "
+	echo -e "13-19-HWBand1/2FIFO3  RXHCDeagg    BFParser     TXHC          Locker           BAA           Reserved"
+	echo -e "14-20-HWBand1/2FIFO4  Coordinator  PSSetting    TXPDAcc       TxSelBitmap      DeliaLegacy   Reserved"
+	echo -e "15-21-HWBand1/2FIFO5  AutoResp     BAAStatsCntr TFGen         Sequencer        PlanLocker    AlphaPHY "
+	echo -e "16-22-HWBand1/2FIFO6  BSRC         Alpha        DeliaAutoFill TxH              Beacon        RXC"
+	echo -e ">> 00-CONTINUE"
+}
+
+wlan_fw_logger_700_BIT_SET_table()
+{
+	echo -e "BIT  Module"
+	echo -e "0  - UMACBand0"
+	echo -e "1  - LMACBand0"
+	echo -e "2  - HostIfRISC"
+	echo -e "3  - RxHandlerBand0"
+	echo -e "4  - TxSenderBand0"
+	echo -e "5  - PHYGenRiscBand0"
+	echo -e "6  - PHYHWBand0"
+	echo -e "23 - LMACBand1"
+	echo -e "24 - RxHandlerBand1"
+	echo -e "25 - TxSenderBand1"
+	echo -e "26 - PHYGenRiscBand1"
+	echo -e "27 - PHYHWBand1"
+	echo -e "28 - LMACBand2"
+	echo -e "29 - RxHandlerBand2"
+	echo -e "30 - TxSenderBand2"
+	echo -e "31 - PHYGenRiscBand2"
+	echo -e ">> 00 - CONTINUE"
+}
 
 wlan_fw_logger()
 {
@@ -403,10 +456,14 @@ wlan_fw_logger()
 				echo -e "PLAT TYPE 600-$plat_type"
 				wlan_fw_logger_600_B_HW_FIFO_table >>/tmp/fw_logger
 				wlan_fw_logger_600_B_HW_FIFO_table
-			elif [ "$plat_type" = "D2" ] || [ "$plat_type" = "700" ]; then
-				echo -e "PLAT TYPE $plat_type"
+			elif [ "$plat_type" = "D2" ]; then
+				echo -e "PLAT TYPE 600-$plat_type"
 				wlan_fw_logger_600_D2_HW_FIFO_table >>/tmp/fw_logger
 				wlan_fw_logger_600_D2_HW_FIFO_table
+			elif [ "$plat_type" = "700" ]; then
+				echo -e "PLAT TYPE $plat_type"
+				wlan_fw_logger_700_HW_FIFO_table >>/tmp/fw_logger
+				wlan_fw_logger_700_HW_FIFO_table
 			else
 				echo -e "Invalid input\n" > /dev/console
 				exit 0
@@ -439,9 +496,22 @@ wlan_fw_logger()
 
 		while [ 1 ]
 		do
-				echo -e "PLAT TYPE 600-$plat_type"
-				[ "$plat_type" = "B" ] && wlan_fw_logger_600_B_BIT_SET_table || wlan_fw_logger_600_D2_BIT_SET_table
-				echo -ne "Module BIT select valid:0-6 & 23-27 >>" > /dev/console;read bit_select
+				if [ "$plat_type" = "B" ]; then
+					echo -e "PLAT TYPE 600-$plat_type"
+					wlan_fw_logger_600_B_BIT_SET_table
+					echo -ne "Module BIT select valid:0-6 & 23-27 >>" > /dev/console;read bit_select
+				elif [ "$plat_type" = "D2" ]; then
+					echo -e "PLAT TYPE 600-$plat_type"
+					wlan_fw_logger_600_D2_BIT_SET_table
+					echo -ne "Module BIT select valid:0-6 & 23-27 >>" > /dev/console;read bit_select
+				elif [ "$plat_type" = "700" ]; then
+					echo -e "PLAT TYPE $plat_type"
+					wlan_fw_logger_700_BIT_SET_table
+					echo -ne "Module BIT select valid:0-6 & 23-31 >>" > /dev/console;read bit_select
+				else
+					echo -e "Invalid plat type &plat_type" > /dev/console
+					exit 0
+				fi
 				[ "$bit_select" = "00" ] && break
 				bit_select_sum="$bit_select_sum:$bit_select"
 				temp="0x01"
@@ -459,7 +529,7 @@ wlan_fw_logger()
 		[ -e /tmp/fw_logger_select_sum ] && cat /tmp/fw_logger_select_sum
 		rm -rf /tmp/fw_logger*
 		echo -e "\nSelected bit modules:$bit_select_sum\n\nbit_set_summary=$cards_set"
-		echo -ne "\npress any ket to continue...";read p
+		echo -ne "\npress any key to continue...";read p
 		clear
 
 		echo -e "Enter host_pc_serverip:" > /dev/console
@@ -467,6 +537,9 @@ wlan_fw_logger()
 		echo -e "Enter  host_pc_ethaddr:" > /dev/console
 		echo -ne ">>" > /dev/console;read host_pc_ethaddr
 		echo -e "Enter interface 0-wlan0 2-wlan2 4-wlan4:" > /dev/console
+		if [ "$plat_type" = "700" ]; then
+			echo -e "Note: for WAV700 logger interaface is always wlan0" > /dev/console
+		fi
 		echo -ne "Enter interface number>>" > /dev/console;read interface
 		interface="wlan$interface"
 

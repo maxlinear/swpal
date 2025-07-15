@@ -102,6 +102,10 @@ elif [ "$OS_NAME" = "UGW" ]; then
 	DPORT=9000
 	ubus call firewalld notify_firewall_change '{ "rule1" : "iptables -I zone_wan_input -p '$PROTO' --dport '$DPORT' -j ACCEPT" }'
 	ubus call firewalld notify_firewall_change '{ "rule2" : "iptables -I zone_lan_input -p '$PROTO' --dport '$DPORT' -j ACCEPT" }'
+elif [ "$OS_NAME" = "UPDK" ]; then
+	PROTO=tcp                  # The PROTO value 6 evaluates to 'tcp'
+	DPORT=9000
+	iptables -I INPUT 1 -p $PROTO --dport $DPORT -j ACCEPT
 fi
 
 dirname() {
@@ -113,7 +117,7 @@ dirname() {
 }
 thispath=`dirname $0`
 
-if [ "$OS_NAME" = "UGW" ]; then
+if [ "$OS_NAME" == "UGW" || "$OS_NAME" == "UPDK" ]; then
 	sigma_path="/tmp/"
 else
 	sigma_path="/var/"

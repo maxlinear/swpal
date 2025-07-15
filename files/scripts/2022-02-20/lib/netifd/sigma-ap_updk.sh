@@ -1,25 +1,7 @@
 #!/bin/sh
 
-debug_flag=1 #Only for debugging 
 # Test script for Wi-Fi Sigma Control API for APs
-# Commands based on version 10.2.0
-#
-# On target board run:
-# $ cd /tmp
-# $ mknod sigma-pipe p
-# $ nc -l -p 9000 < sigma-pipe | ./sigma-ap.sh > sigma-pipe &
-# or as persistent
-# while true; do nc -l -p 9000 < sigma-pipe | "./sigma-ap.sh" > ./sigma-pipe; done &
-# On PC run:
-# $ nc <board-ip> 8989
-# or
-# connect with telnet client in raw mode to <board-ip>:8989
-# Then enter commands and send them with <ENTER>
-
-# First digit - Major: Changes incompatible with previous version
-# Second digit - Minor: Extension features
-# Third digit - Fix: Fixes
-# TODO: Store md5 checksum inside the script
+# Commands based on version 10.22.0
 
 source_flag=`cat "/proc/$PPID/cmdline" | grep -oE '[^/]+$' | sed 1d`
 
@@ -31,76 +13,11 @@ if [ -f $USER_INPUT_FILE ]; then
 	. $USER_INPUT_FILE
 fi
 
+WIFI_RELOAD_CMD="/etc/init.d/prplmesh_whm restart ; sleep 25"
+MODEL="WAV700_AP"
+
 ORIG_IFS=$IFS
 WAVE_VERSION_FILE="$WAVE_COMPONENTS_FILE"
-nof_interfaces=`iw phy | grep -c Wiphy`
-
-if [ "$OS_NAME" = "RDKB" ]; then
-	WIFI_RELOAD_CMD="systemctl restart systemd-netifd.service"
-	MODEL=$OS_NAME
-elif [ "$OS_NAME" = "UGW" ]; then
-	WIFI_RELOAD_CMD="wifi down ; sleep 3; wifi up"
-    atom_cpu=`version.sh | grep "CPU:" | grep -i atom`
-	
-	if [ "$nof_interfaces" = "3" ]; then
-		hw_revision_wlan4=`cat /proc/net/mtlk/wlan4/eeprom_parsed | grep "HW revision" | awk '{print $4}'`
-		hw_revision_wlan0=`cat /proc/net/mtlk/wlan0/eeprom_parsed | grep "HW revision" | awk '{print $4}'`
-		hw_type=`cat /proc/net/mtlk/wlan4/eeprom_parsed | grep "HW type" | awk '{print $4}'`
-	elif [ "$nof_interfaces" = "2" ]; then
-		hw_type=`cat /proc/net/mtlk/wlan4/eeprom_parsed | grep "HW type" | awk '{print $4}'`
-		hw_revision_wlan0=`cat /proc/net/mtlk/wlan0/eeprom_parsed | grep "HW revision" | awk '{print $4}'`
-		hw_revision_wlan2=`cat /proc/net/mtlk/wlan2/eeprom_parsed | grep "HW revision" | awk '{print $4}'`
-	fi
-
-	if [ -n "$atom_cpu" ]; then
-		#Differentiation needed between LGM and OCTOPUS as PCI_SLOT values are different for Wave600-D2
-		#Wireless controller: Device value is 1e43:3171 for Octopus and 0d5a for LGM
-		#Until we find the proper MACRO to differentiat, we can use this hack temperorily
-		#hw_type for B0 GPB for Octopus is 0x72.
-		#In UGW, the radio_map_file is no longer needed.
-		PLAT_MODEL=`lspci | cut -c 37-45 | sort -ur | grep 1e43:3171`
-		if [ "$PLAT_MODEL" = "1e43:3171" ]; then
-			if [ "$hw_type" = "0x70" ] || [ "$hw_type" = "0x71" ] || [ "$hw_type" = "0x72" ]; then
-				MODEL="WAV700_AP"
-			else
-				[ "$nof_interfaces" = "3" ] && [ "$hw_revision_wlan4" = "0x4E" ] && MODEL="AX11000"
-				[ "$nof_interfaces" = "3" ] && [ "$hw_revision_wlan4" = "0x55" ] && MODEL="AX11000"
-				[ "$nof_interfaces" = "2" ] && MODEL="AX11000"
-				[ "$nof_interfaces" = "4" ] && [ -n `echo "$hw_revision_wlan4" | grep "0x55"` ] && MODEL="AX11000"
-			fi
-		else
-			[ "$nof_interfaces" = "3" ] && [ "$hw_revision_wlan4" = "0x4E" ] && MODEL="AX11000"
-			[ "$nof_interfaces" = "3" ] && [ "$hw_revision_wlan4" = "0x55" ] && MODEL="AX11000"
-			[ "$nof_interfaces" = "2" ] && MODEL="AX11000"
-			[ "$nof_interfaces" = "4" ] && [ -n `echo "$hw_revision_wlan4" | grep "0x55"` ] && MODEL="AX11000"
-		fi
-	else
-		[ "$nof_interfaces" = "3" ] && [ "$hw_revision_wlan4" = "0x4E"  -o "$hw_revision_wlan4" = "0x42" ] && MODEL="AX7800"
-		[ "$nof_interfaces" = "2" ] && [ "$hw_revision_wlan0" = "0x41" ] && [ "$hw_revision_wlan2" = "0x42" ] && MODEL="AX6000"
-		[ "$nof_interfaces" = "2" ] && [ "$hw_revision_wlan0" = "0x45" ] && [ "$hw_revision_wlan2" = "0x45" ] && MODEL="AX3000"
-	fi
-	#This is just a workaround for Wi_Fi 7 as version.sh is not very stable 
-	[ ! -n "$atom_cpu" ] && MODEL="WAV700_AP"
-fi
-
-error_print()
-{
-	echo "sigma ERROR: $*" > /dev/console
-}
-
-info_print()
-{
-	echo "sigma INFO: $*" > /dev/console
-}
-
-if [ "$MODEL" = "" ]; then
-	MODEL="MXL-AP"
-    error_print "check eeprom card values"
-fi
-
-SEND_IW_WLAN0="iw dev wlan0 iwlwav"
-SEND_IW_WLAN2="iw dev wlan2 iwlwav"
-SEND_IW_WLAN4="iw dev wlan4 iwlwav"
 
 WAVE_VERSION=`grep wave_release_minor $WAVE_VERSION_FILE`
 WAVE_VERSION=${WAVE_VERSION##*=}
@@ -112,21 +29,41 @@ VENDOR='MxL'
 DEBUGGING=1 # 1=enabled 0=disabled
 # TIMESTAMP="cat /proc/uptime"
 TIMESTAMP=
-LOG_CMD=$SCRIPTS_PATH/wave_collect_debug.sh
-FACTORY_CMD=$SCRIPTS_PATH/wave_factory_reset.sh
-UCI_CMD=/lib/config/uci.sh
-HOSTAPD_CLI_CMD=hostapd_cli
-if [ "$MODEL" != "AX11000" ] && [ "$MODEL" != "WAV700_AP" ] && [ "$OS_NAME" = "UGW" ]; then
-	HOSTAPD_CLI_CMD="sudo -u nwk -- $HOSTAPD_CLI_CMD"
-fi
 
-#UPDATE_RNR_CLI uses hostapd_cli and UPDATE_RNR_UCI uses uci
-#Use user configuration accordingly
-UPDATE_RNR_UCI=/lib/netifd/update_rnr_uci.sh
-UPDATE_RNR_CLI=/lib/netifd/update_rnr.sh
-if [ "$MODEL" != "AX11000" ] && [ "$MODEL" != "WAV700_AP" ] && [ "$OS_NAME" = "UGW" ]; then
-	UPDATE_RNR_CLI="sudo -u nwk -- $UPDATE_RNR_CLI"
-fi
+error_print()
+{
+	echo "sigma ERROR: $*" > /dev/console
+}
+
+info_print()
+{
+	echo "sigma INFO: $*" > /dev/console
+}
+
+SEND_IW_WLAN0="iw dev wlan0 iwlwav"
+SEND_IW_WLAN2="iw dev wlan2 iwlwav"
+SEND_IW_WLAN4="iw dev wlan4 iwlwav"
+
+CURRENT_5G_RADIO_PATH="WiFi.Radio.2"
+CURRENT_24G_RADIO_PATH="WiFi.Radio.1"
+CURRENT_6G_RADIO_PATH="WiFi.Radio.3"
+CURRENT_5G_AP_PATH="WiFi.AccessPoint.9"
+CURRENT_24G_AP_PATH="WiFi.AccessPoint.1"
+CURRENT_6G_AP_PATH="WiFi.AccessPoint.17"
+CURRENT_5G_SSID_PATH="WiFi.SSID.9"
+CURRENT_24G_SSID_PATH="WiFi.SSID.1"
+CURRENT_6G_SSID_PATH="WiFi.SSID.17"
+CURRENT_6G_SSID_PATH_2=""
+CURRENT_5G_SSID_PATH_2=""
+CURRENT_24G_SSID_PATH_2=""
+CURRENT_6G_AP_PATH_2=""
+CURRENT_5G_AP_PATH_2=""
+CURRENT_24G_AP_PATH_2=""
+CURRENT_SSID_PATH_2=""
+CURRENT_AP_PATH_2=""
+
+LOG_CMD=$SCRIPTS_PATH/wave_collect_debug.sh
+HOSTAPD_CLI_CMD=hostapd_cli
 
 #SID values for W700
 SID_24G_MIN="128"
@@ -138,6 +75,7 @@ SID_6G_MAX="509"
 
 FORCE_EHT_FIXED_RATE_CFG_FILE_PATH="/tmp/force_eht_fixed_rate_cfg"
 FORCE_AKM_SUITE_TYPE_TO_SAE_AND_SAEEXTKEY_FILE_PATH="/tmp/force_akm_suite_type_to_sae_and_sae_ext_key"
+N_TESTING_FILE_PATH="/tmp/11n_testing"
 
 dirname()
 {
@@ -159,6 +97,55 @@ debug_print()
 	if [ "$DEBUGGING" = "1" ]; then
 		echo "$(timestamp) sigma DEBUG: $*" > /dev/console
 	fi
+}
+
+restore_default_config()
+{
+	debug_print "Restore the hostapd config to default"
+
+	$PWHM stop
+	sleep 5
+	rm -rf $ODL_FILE_PATH
+	$PWHM start
+	sleep 10
+
+	local is_dfs_channel=`check_dfs_channel`
+	[ "$is_dfs_channel" == "1" ] && sleep 65
+
+	# Clear the extra VAPs(wlan2.2 - wlan2.8, wlan0.2 - wlan0.8 and wlan4.2 - wlan4.8) attached to br-guest	
+	for i in 2 16 24
+	do
+		ret=`ubus call WiFi.AccessPoint.$i _set '{"parameters": {"Enable": "0"}}'`
+		sleep 3
+	done
+	
+	for i in 2 3 4 5 6 7 8
+	do
+		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe2gssid${i}\"}\'`
+		sleep 4
+		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe5gssid${i}\"}\'`
+		sleep 4
+		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe6gssid${i}\"}\'`
+		sleep 4
+	done	
+
+	ret=`ubus call WiFi.EndPoint.1 _set '{"parameters": {"Enable": "0"}}'`
+	sleep 3
+	ret=`ubus call WiFi.EndPoint.2 _set '{"parameters": {"Enable": "0"}}'`
+	sleep 3
+	ret=`ubus call WiFi.EndPoint.3 _set '{"parameters": {"Enable": "0"}}'`
+	sleep 3
+	ret=`ubus call WiFi delEndPointIntf '{"endpoint": "ep2g0"}'`
+	sleep 4
+	ret=`ubus call WiFi delEndPointIntf '{"endpoint": "ep6g0"}'`
+	sleep 4
+	ret=`ubus call WiFi delEndPointIntf '{"endpoint": "ep5g0"}'`
+	sleep 4
+	string1="protected"
+	string2="WiFi.Vendor.ModuleMode.CertificationMode=1"
+	string3="exit"
+
+	ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 }
 
 # array like helper functions (ash)
@@ -233,7 +220,7 @@ kill_sigma_mbo_daemon()
 {
 	local old_ifs
 	local killwatchdog=0
-	local daemon_pid=`ps -w | grep sigma_mbo_daemon.sh | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+	local daemon_pid=`ps -eF | grep sigma_mbo_daemon.sh | grep -v grep | awk '{ print $2 }' | tr  '\n' ' '`
 	old_ifs=$IFS
 	IFS=' '
 	while [ "$daemon_pid" != "" ]; do
@@ -243,7 +230,7 @@ kill_sigma_mbo_daemon()
 			pidtoKill=$p
 			kill "$pidtoKill"
 		done
-		daemon_pid=`ps -w | grep sigma_mbo_daemon.sh | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+		daemon_pid=`ps -eF | grep sigma_mbo_daemon.sh | grep -v grep | awk '{ print $2 }' | tr  '\n' ' '`
 		let killwatchdog=killwatchdog+1
 	done
 	IFS=$old_ifs
@@ -255,7 +242,7 @@ kill_sigmaManagerDaemon_static()
 {
 	local old_ifs
 	local killwatchdog=0
-	local daemon_pid=`ps -w | grep sigmaManagerDaemon_static | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+	local daemon_pid=`ps -eF | grep sigmaManagerDaemon_static | grep -v grep | awk '{ print $2 }' | tr  '\n' ' '`
 	old_ifs=$IFS
 	IFS=' '
 	while [ "$daemon_pid" != "" ]; do
@@ -265,7 +252,7 @@ kill_sigmaManagerDaemon_static()
 			pidtoKill=$p
 			kill "$pidtoKill"
 		done
-		daemon_pid=`ps -w | grep sigmaManagerDaemon_static | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+		daemon_pid=`ps -eF | grep sigmaManagerDaemon_static | grep -v grep | awk '{ print $2 }' | tr  '\n' ' '`
 		let killwatchdog=killwatchdog+1
 	done
 	IFS=$old_ifs
@@ -277,7 +264,7 @@ kill_sigmaManagerDaemon()
 {
 	local old_ifs
 	local killwatchdog=0
-	local daemon_pid=`ps -w | grep sigmaManagerDaemon | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+	local daemon_pid=`ps -eF | grep sigmaManagerDaemon | grep -v grep | awk '{ print $2 }' | tr  '\n' ' '`
 	old_ifs=$IFS
 	IFS=' '
 	while [ "$daemon_pid" != "" ]; do
@@ -287,7 +274,7 @@ kill_sigmaManagerDaemon()
 			pidtoKill=$p
 			kill "$pidtoKill"
 		done
-		daemon_pid=`ps -w | grep sigmaManagerDaemon | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+		daemon_pid=`ps -eF | grep sigmaManagerDaemon | grep -v grep | awk '{ print $2 }' | tr  '\n' ' '`
 		let killwatchdog=killwatchdog+1
 	done
 	IFS=$old_ifs
@@ -365,7 +352,7 @@ sortPlan()
 			[ "$val" -lt "4" ] && next_pos=$((next_pos+offset))
 			index=$((index+1))
 			val=$((val+1))
-		else		
+		else
 			splanconfigRUsorted="$splanconfigRUsorted $pos"
 		fi
 	done
@@ -488,8 +475,8 @@ convert_fixed_rate()
 		"80MHz") bw_converted="2" ;;
 		"160MHz") bw_converted="3" ;;
 		#Host/FW interface is configured with only one bandwidth value(4) for both 320MHz-1 and 320MHz-2 channel
-		"320_1MHz"|"3201MHz") bw_converted="4" ;;
-		"320_2MHz"|"3202MHz") bw_converted="4" ;;
+		"320MHz-1"|"3201MHz") bw_converted="4" ;;
+		"320MHz-2"|"3202MHz") bw_converted="4" ;;
 		"*") bw_converted="";;
 	esac
 	
@@ -525,14 +512,15 @@ get_disabled_subchannel_bitmap()
 	local chnl_list=""
 	local index
 	local x=0
-	CURRENT_RADIO_UCI_PATH=$1
-	puncturing_bw=$2
-	punct_chnl=$3
-	dsb_res_val=$4
+	puncturing_bw=$1
+	punct_chnl=$2
+	dsb_res_val=$3
 
 	[ "$global_primary_channel" = "$punct_chnl" ] && error_print "! ! ! Primary channel cannot be punctured ! ! !"
-	mode=`$UCI_CMD get $CURRENT_6G_RADIO_UCI_PATH.htmode`
-	if [ "$mode" = "EHT320_1" ] && [ "$puncturing_bw" = "4" ]; then
+	mode=`ubus-cli $CURRENT_6G_RADIO_PATH.OperatingChannelBandwidth?`
+	mode=`echo $mode | cut -d"=" -f2 | tr -d '"'`
+
+	if [ "$mode" = "320MHz-1" ] && [ "$puncturing_bw" = "4" ]; then
 		chnl_list="1 5 9 13 17 21 25 29 33 37 41 45 49 53 57 61"
 		base_chnl=1
 		i=$base_chnl
@@ -543,7 +531,7 @@ get_disabled_subchannel_bitmap()
 		chnl_list="33 37 41 45 49 53 57 61 65 69 73 77 81 85 89 93"
 		base_chnl=33
 		i=$base_chnl
-	if [ "$puncturing_bw" = "4" ]; then
+		if [ "$puncturing_bw" = "4" ]; then
 			[ "$punct_chnl" -le "61" ] && error_print "! ! ! Puncturing of a subchannel in the Primary band is NOT supported ! ! !"
 		elif [ "$puncturing_bw" = "3" ]; then
 			[ "$global_primary_channel" = "37" ] && [ "$punct_chnl" -le "45" ] && error_print "! ! ! Puncturing of a subchannel in the Primary band is NOT supported ! ! !"
@@ -580,11 +568,9 @@ get_disabled_subchannel_bitmap_val()
 	local i=1
 	local dis_subchnl_bitmap_val=0
 	nof_channels=$2
-	CURRENT_RADIO_UCI_PATH=$1
 	mode=$3
 
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	punct_bw=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx`
+	punct_bw=`get_index_from_db "PLAN_COMMON_6G" x$txop_com_start_bw_limit_idx`
 
 	while [ "$i" -le "$nof_channels" ]; do
 		if [ "$mode" -eq 0 ]; then
@@ -598,7 +584,7 @@ get_disabled_subchannel_bitmap_val()
 			return
 		fi
 		info_print "Punctured Chnl${i} : $punct_chnl"
-		dis_subchnl_bitmap_val=`get_disabled_subchannel_bitmap $CURRENT_RADIO_UCI_PATH $punct_bw $punct_chnl $dis_subchnl_bitmap_val`
+		dis_subchnl_bitmap_val=`get_disabled_subchannel_bitmap $punct_bw $punct_chnl $dis_subchnl_bitmap_val`
 		i=$((i+1))
 	done
 	echo "$dis_subchnl_bitmap_val"
@@ -607,10 +593,8 @@ get_disabled_subchannel_bitmap_val()
 get_index_from_db()
 {
         param="$1"
-        values=`$UCI_CMD get $param`
-		values=`echo $values | sed 's/=/ /g'`
+		eval values=\${$param}
         x=${2/x}
-        let x=x+1
         echo `values_get_at "$values" " " "$x"`
 }
 
@@ -635,11 +619,11 @@ check_all_interfaces()
 	local total_vaps total_up_vaps
 	ap_tmp=`iw dev wlan8 del` #Workaround for CGR zwdfs
 	if [ -z "$1" ]; then
-		total_vaps=`eval uci show wireless | grep ifname | cut -d"=" -f2 | grep -v wlan6 | wc -w`
-		total_up_vaps=`eval ifconfig | grep -v wlan6 | grep -c wlan`
+		total_up_vaps=`eval iw dev | grep channel | wc -l`
+		total_vaps=`eval ifconfig | grep -v wlan6 | grep -c wlan`
 	else
-		total_vaps=`eval uci show wireless | grep ifname | grep $1 | cut -d"=" -f2 | grep -v wlan6 | wc -w`
-		total_up_vaps=`eval ifconfig | grep -v wlan6 | grep $1 | grep -c wlan`
+		total_up_vaps=`eval iw dev | grep Interface | grep $1 | wc -l`
+		total_vaps=`eval ifconfig | grep -v wlan6 | grep $1 | grep -c wlan`
 	fi
 	if [ $total_vaps -eq $total_up_vaps ]
 	then
@@ -715,39 +699,34 @@ force_ap_cleanup()
 	rcvry_count=`echo $full_rcvry_count | awk -F" " '{print $2}'`
 	#Reloading of driver will only happen if any or both of the above IW commands failed to get the 0 as status result code.
 	#Or the recovery count reaches to 20 out of the max limit set ,i.e 25.
-	if [ $res1 != "0" ] || [ $res2 != "0" ] || [ $rcvry_count -gt 19 ]; then
-		debug_print "Reloading the driver modules ..."
-		reload_driver_with_acceleration 1
-		glob_ap_driver_reload=1
-		local dh_pid=`ps -w | grep dump_handler | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
-		while [ "$dh_pid" != "" ]; do
-			debug_print "Kill dump_handler"
-			kill -9 $dh_pid
-			sleep 10
-			dh_pid=`ps -w | grep dump_handler | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
-		done
-		debug_print "Kill whm_handler"
-		killall whm_handler
-		sleep 2
-	else
-		wifi down
-		sleep 5
-	fi
+	# if [ $res1 != "0" ] || [ $res2 != "0" ] || [ $rcvry_count -gt 19 ]; then
+	# 	debug_print "Reloading the driver modules ..."
+	# 	reload_driver_with_acceleration 1
+	# 	glob_ap_driver_reload=1
+	# 	local dh_pid=`ps -w | grep dump_handler | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+	# 	while [ "$dh_pid" != "" ]; do
+	# 		debug_print "Kill dump_handler"
+	# 		kill -9 $dh_pid
+	# 		sleep 10
+	# 		dh_pid=`ps -w | grep dump_handler | grep -v grep | awk '{ print $1 }' | tr  '\n' ' '`
+	# 	done
+	# 	debug_print "Kill whm_handler"
+	# 	killall whm_handler
+	# 	sleep 2
+	# else
+	# 	wifi down
+	# 	sleep 5
+	# fi
 }
 
 check_dfs_channel()
 {
-	radios=`uci show wireless | grep "band='5GHz'" | cut -d"." -f1-2`
-	for radio in $radios
-	do
-		channel=`uci show $radio.channel | cut -d"=" -f2 | tr -d "'"`
-		bw=`uci show $radio.htmode | cut -d"=" -f2 | tr -d "'"`
-		if [ "$channel" != "first_non_dfs" ]; then
-			break;
-		fi
-	done
+	bw=`ubus-cli $CURRENT_5G_RADIO_PATH.OperatingChannelBandwidth?`
+	bw=`echo $bw | cut -d"=" -f2 | tr -d '"'`
+	channel=`ubus-cli $CURRENT_5G_RADIO_PATH.Channel?`
+	channel=`echo $channel | cut -d"=" -f2 | cut -d" " -f1 | head -n 1`
 
-	if [ "$bw" = "VHT160" ] || [ "$bw" = "HT160" ] || { [ $channel -gt 48 ] && [ $channel -lt 149 ]; }; then
+	if [ "$bw" = "160MHz" ] || { [ $channel -gt 48 ] && [ $channel -lt 149 ]; }; then
 		debug_print "$channel is a dfs channel"
 		echo 1
 	else
@@ -780,7 +759,41 @@ verify_interfaces_up()
 	fi
 }
 
-# Static planner - Defined indexes names and location 
+FIXED_RATE_CFG_5G="511 1 2 4 2 11 2 0 0 0 2"
+FIXED_RATE_CFG_6G="511 1 2 4 2 11 2 0 0 0 2"
+FIXED_RATE_CFG_24G="511 1 2 4 2 11 2 0 0 0 2"
+
+# Static planner - Defined indexes names and location
+PLAN_COMMON_5G="0 32000 1 2 0 0 0 0 2700 26 6 6 2 2 2 2914 3 0 0 0 0 0"
+PLAN_FOR_1_USER_5G="0 29 255 29 0 0 0 3 0 0 2 70 1 29 0 0 3 0 1"
+PLAN_FOR_2_USER_5G="1 29 255 29 0 1 0 3 0 0 2 70 1 29 1 0 3 0 1"
+PLAN_FOR_3_USER_5G="2 29 255 29 0 2 0 3 0 0 2 70 1 29 2 0 3 0 1"
+PLAN_FOR_4_USER_5G="3 29 255 29 0 3 0 3 0 0 2 70 1 29 3 0 3 0 1"
+MRU_PLAN_FOR_1_USER_5G="0 0"
+MRU_PLAN_FOR_2_USER_5G="0 0"
+MRU_PLAN_FOR_3_USER_5G="0 0"
+MRU_PLAN_FOR_4_USER_5G="0 0"
+
+PLAN_COMMON_6G="0 32000 1 3 0 0 0 0 2700 26 6 6 2 2 2 2914 3 0 0 0 0 0"
+PLAN_FOR_1_USER_6G="0 29 255 29 0 0 0 3 0 0 2 70 1 29 0 0 3 0 1"
+PLAN_FOR_2_USER_6G="1 29 255 29 0 1 0 3 0 0 2 70 1 29 1 0 3 0 1"
+PLAN_FOR_3_USER_6G="2 29 255 29 0 2 0 3 0 0 2 70 1 29 2 0 3 0 1"
+PLAN_FOR_4_USER_6G="3 29 255 29 0 3 0 3 0 0 2 70 1 29 3 0 3 0 1"
+MRU_PLAN_FOR_1_USER_6G="0 0"
+MRU_PLAN_FOR_2_USER_6G="0 0"
+MRU_PLAN_FOR_3_USER_6G="0 0"
+MRU_PLAN_FOR_4_USER_6G="0 0"
+
+PLAN_COMMON_24G="0 32000 1 0 0 0 0 0 2700 26 6 6 2 2 2 2914 3 0 0 0 0 0"
+PLAN_FOR_1_USER_24G="0 29 255 29 0 0 0 1 0 0 2 70 1 29 0 0 1 0 1"
+PLAN_FOR_2_USER_24G="1 29 255 29 0 0 2 1 0 0 2 70 1 29 0 2 1 0 1"
+PLAN_FOR_3_USER_24G="2 29 255 29 0 0 5 1 0 0 2 70 1 29 0 5 1 0 1"
+PLAN_FOR_4_USER_24G="3 29 255 29 0 0 7 1 0 0 2 70 1 29 0 7 1 0 1"
+MRU_PLAN_FOR_1_USER_24G="0 0"
+MRU_PLAN_FOR_2_USER_24G="0 0"
+MRU_PLAN_FOR_3_USER_24G="0 0"
+MRU_PLAN_FOR_4_USER_24G="0 0"
+
 #common SP
 operation_mode_idx=0
 txop_com_max_tx_op_duration_idx=1
@@ -929,11 +942,8 @@ Dynamic_set_get_helper_none_debug()
         param="$2"
         shift
         shift
-        field="$1"
-        shift
-        values=`$UCI_CMD get $param`
-		values=`echo $values | sed 's/=/ /g'`
-		info_print "none values=$values"
+        eval values=\${$param}
+		info_print "values=$values"
         local num_values=`values_get_count "$values" " "`
         for x in $@; do
                 local tmp_val=`values_get_at "$x" "=" "0"`
@@ -943,11 +953,11 @@ Dynamic_set_get_helper_none_debug()
                         values=`values_replace_at "$values" " " "$idx" "$value"`
                 fi
         done
-		info_print "iw dev $interface_name iwlwav ${field} $values"
-        eval iw dev $interface_name iwlwav ${field} $values
-		info_print "none $UCI_CMD set ${param}=\"$values\""
-		$UCI_CMD set ${param}="$values"
-		eval iw $interface_name iwlwav $field ${values/${field}}
+		info_print "iw dev $interface_name iwlwav sMuStatPlanCfg $values"
+        eval iw dev $interface_name iwlwav sMuStatPlanCfg $values
+		info_print "set ${param}=\"$values\""
+		eval ${param}="\"$values\""
+		eval iw $interface_name iwlwav sMuStatPlanCfg ${values}
 }
 
 Dynamic_set_get_helper()
@@ -959,27 +969,23 @@ Dynamic_set_get_helper()
         param="$2"
         shift
         shift
-        field="$1"
-        shift
-		values=`$UCI_CMD get $param`
-		values=`echo $values | sed 's/=/ /g'`
-		info_print "values=$UCI_CMD get $param"
+		eval values=\${$param}
 		info_print "values=$values"
         local num_values=`values_get_count "$values" " "`
         for x in $@; do
                 local tmp_val=`values_get_at "$x" "=" "0"`
                 local idx=${tmp_val/x}
                 local value=`values_get_at "$x" "=" "1"`
-                let idx++
                 if [ "$idx" -lt "$num_values" ]; then
                         values=`values_replace_at "$values" " " "$idx" "$value"`
                 fi
+                let idx++
         done
-		info_print "$UCI_CMD set ${param}=\"$values\""
-		$UCI_CMD set $param="$values"
+		info_print "Setting ${param}=\"$values\""
+		eval ${param}="\"$values\""
 
 		if [ "${rf_flag}" = "iw_on" ]; then
-			iw $interface_name iwlwav $field ${values/${field}}
+			iw $interface_name iwlwav sMuStatPlanCfg ${values}
 		fi
 		if [ "${rf_flag}" = "iw_off" ]; then
 			debug_print "Dynamic_set_get_helper iw_off not sending plan"
@@ -988,30 +994,29 @@ Dynamic_set_get_helper()
 
 set_get_helper()
 {
-	param=`values_get_at "$1" "=" "0"`
+	param="$1"
 	shift
-	values=`$UCI_CMD get ${param}`
-	values=`echo $values | sed 's/=/ /g'`
+	eval values=\${$param}
 	local num_values=`values_get_count "$values" " "`
 	for x in $@; do
 		local tmp_val=`values_get_at "$x" "=" "0"`
 		local idx=${tmp_val/x}
 		local value=`values_get_at "$x" "=" "1"`
-		let idx++
 		if [ "$idx" -lt "$num_values" ]; then
 			values=`values_replace_at "$values" " " "$idx" "$value"`
 		fi
+		let idx++
 	done
-	info_print "$UCI_CMD set ${param}=\"$values\""
-	$UCI_CMD set ${param}="$values"
+	info_print "Setting ${param}=\"$values\""
+	eval ${param}="\"$values\""
+	[ "$num_values" -le "10" ] && echo "$values"
 }
 
 set_get_helper_non_debug()
 {
 	param="$1"
 	shift
-	values=`$UCI_CMD get $param`
-	values=`echo $values | sed 's/=/ /g'`
+	eval values=\${$param}
 	local num_values=`values_get_count "$values" " "`
 	for x in $@; do
 		local tmp_val=`values_get_at "$x" "=" "0"`
@@ -1021,9 +1026,10 @@ set_get_helper_non_debug()
 			values=`values_replace_at "$values" " " "$idx" "$value"`
 		fi
 	done
-	info_print "$UCI_CMD set $param=\"$values\""
-	$UCI_CMD set $param="$values"
-} 
+	info_print "Setting $param=\"$values\""
+	eval ${param}="\"$values\""
+	[ "$num_values" -le "10" ] && echo "$values"
+}
 
 get_nss_mcs_val()
 {
@@ -1160,6 +1166,7 @@ get_interface_details()
 	ap_channel_freq=0
 	ap_wlan_tag=0
 	ap_cur_wlan_tag=
+	ap_band=
 
 	while [ "$1" != "" ]; do
 		upper "$1" token
@@ -1198,12 +1205,6 @@ get_interface_details()
 		esac
 		shift
 	done
-	
-	if [ "$interface_given" == "done" ]; then
-		CURRENT_WLAN_TAG1=
-		CURRENT_WLAN_TAG2=
-		CURRENT_WLAN_TAG3=
-	fi
 
 	if [ "$tag_given" = "done" ]
 	then
@@ -1211,117 +1212,86 @@ get_interface_details()
 		ap_wlan_tag=$(($ap_wlan_tag - 1))
 	fi
 
-	if [ "$channel_given" = "" ] && [ "$interface_given" = "" ] && [ "$tag_given" = "" ] && [ "$channel_freq_given" = "" ] && [ "$CURRENT_RADIO_UCI_PATH" != "" ]
+	if [ "$channel_given" = "" ] && [ "$interface_given" = "" ] && [ "$tag_given" = "" ] && [ "$channel_freq_given" = "" ] && [ "$CURRENT_RADIO_PATH" != "" ]
 	then
 		return
 	fi
 
-	CURRENT_6G_RADIO_UCI_PATH=$ap_radio_6g_uci_path
-	CURRENT_6G_WLAN_NAME=$ap_wlan_6g_name
-	CURRENT_6G_IFACE_UCI_PATH=wireless.default_radio$ap_uci_6g_idx
-	CURRENT_5G_RADIO_UCI_PATH=$ap_radio_5g_uci_path
-	CURRENT_5G_WLAN_NAME=$ap_wlan_5g_name
-	CURRENT_5G_IFACE_UCI_PATH=wireless.default_radio$ap_uci_5g_idx
-	CURRENT_24G_RADIO_UCI_PATH=$ap_radio_24g_uci_path
-	CURRENT_24G_WLAN_NAME=$ap_wlan_24g_name
-	CURRENT_24G_IFACE_UCI_PATH=wireless.default_radio$ap_uci_24g_idx	
+	CURRENT_6G_WLAN_NAME="wlan4"
+	CURRENT_5G_WLAN_NAME="wlan2"
+	CURRENT_24G_WLAN_NAME="wlan0"
+	CURRENT_6G_IFACE_NAME="6G"
+	CURRENT_5G_IFACE_NAME="5G"
+	CURRENT_24G_IFACE_NAME="24G"
+	CURRENT_6G_AP_PATH="WiFi.AccessPoint.17"
+	CURRENT_6G_SSID_PATH="WiFi.SSID.17"
 	
 	if [ "$ap_cur_wlan_tag" = "6G" ] || [ "$ap_channel" -eq "33" ] || [ "$ap_channel" -eq "37" ] || [ "$ap_channel" -eq "53" ] || [ "$ap_interface" = "6G" ] || [ "$ap_channel_freq" -gt "5924" ]
 	then
-		ap_radio_uci_path=$ap_radio_6g_uci_path
-		ap_wlan_name=$ap_wlan_6g_name
+		ap_interface_name="6G"
+		ap_wlan_name=$CURRENT_6G_WLAN_NAME
 		if [ "$tag_given" = "done" ]
 		then
 			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=6G
-			RADIO_6G_TAG=${ap_wlan_tag}
 		fi
-		[ "$BASE_TAG_6G" = "" ] && BASE_TAG_6G="$ap_wlan_tag"
-		ap_wlan_tag=$((ap_wlan_tag-BASE_TAG_6G))
-		ap_uci_6g_idx=$(($ap_uci_6g_idx + $ap_wlan_tag))
-		ap_interface_uci_path=wireless.default_radio$ap_uci_6g_idx
+		ap_radio_path=$CURRENT_6G_RADIO_PATH
+		ap_interface_path=$CURRENT_6G_AP_PATH
+		ap_ssid_path=$CURRENT_6G_SSID_PATH
+		[ $ap_non_tx_index = 1 ] && ap_interface_path=$CURRENT_6G_AP_PATH_2 && ap_ssid_path=$CURRENT_6G_SSID_PATH_2
 	elif [ "$ap_cur_wlan_tag" = "5G" ] || [ "$ap_channel" -ge "36" ] || [ "$ap_interface" = "5G" ] || [ "$ap_interface" = "5.0" ]
 	then
-		ap_radio_uci_path=$ap_radio_5g_uci_path
-		
-		ap_wlan_name=$ap_wlan_5g_name
+		ap_interface_name="5G"
+		ap_wlan_name=$CURRENT_5G_WLAN_NAME
 		if [ "$tag_given" = "done" ]
 		then
 			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=5G
-			RADIO_5G_TAG=${ap_wlan_tag}
 		fi
-		[ "$BASE_TAG_5G" = "" ] && BASE_TAG_5G="$ap_wlan_tag"
-		ap_wlan_tag=$((ap_wlan_tag-BASE_TAG_5G))
-		ap_uci_5g_idx=$(($ap_uci_5g_idx + $ap_wlan_tag))
-		ap_interface_uci_path=wireless.default_radio$ap_uci_5g_idx
+		ap_radio_path=$CURRENT_5G_RADIO_PATH
+		ap_interface_path=$CURRENT_5G_AP_PATH
+		ap_ssid_path=$CURRENT_5G_SSID_PATH
 	else
-		ap_radio_uci_path=$ap_radio_24g_uci_path
-		ap_wlan_name=$ap_wlan_24g_name
+		ap_interface_name="24G"
+		ap_wlan_name=$CURRENT_24G_WLAN_NAME
 		if [ "$tag_given" = "done" ]
 		then
-			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=24G
+			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=5G
 		fi
-		[ "$BASE_TAG_24G" = "" ] && BASE_TAG_24G="$ap_wlan_tag"
-		ap_wlan_tag=$((ap_wlan_tag-BASE_TAG_24G))
-		ap_uci_24g_idx=$(($ap_uci_24g_idx + $ap_wlan_tag))
-		ap_interface_uci_path=wireless.default_radio$ap_uci_24g_idx
+		ap_radio_path=$CURRENT_24G_RADIO_PATH
+		ap_interface_path=$CURRENT_24G_AP_PATH
+		ap_ssid_path=$CURRENT_24G_SSID_PATH
 	fi
-	
-	CURRENT_RADIO_UCI_PATH="$ap_radio_uci_path"
+
+	CURRENT_IFACE_NAME="$ap_interface_name"
+	CURRENT_RADIO_PATH="$ap_radio_path"
 	CURRENT_WLAN_NAME="$ap_wlan_name"
-	CURRENT_IFACE_UCI_PATH="$ap_interface_uci_path"
-	CURRENT_IFACE_IFNAME=`$UCI_CMD get $ap_interface_uci_path.ifname`
-}
-
-# Get the index in the db (default_radioX) of the last VAP for a radio.
-get_last_vap_for_radio()
-{
-	local cur_radio="$1"
-
-	local all_ifaces=`uci show wireless | grep device=\'$cur_radio\' | awk -F"." '{print $1 "." $2}' | awk -v RS=  '{$1=$1}1' | tr -d "'"`
-	local all_iface_idxs=`echo $all_ifaces | sed -e 's/[^0-9 ]//g'`
-
-	if [ "$cur_radio" = "radio0" ]; then
-		local max_idx=10
-	elif [ "$cur_radio" = "radio2" ]; then
-		local max_idx=42
-	elif [ "$cur_radio" = "radio4" ]; then
-		local max_idx=74
-	fi
-
-	local old_IFS=$IFS
-	IFS=$ORIG_IFS
-	for curr_idx in $all_iface_idxs
-	do
-		if [ $curr_idx -lt 100 ] && [ $curr_idx -gt $max_idx ]
-		then
-			max_idx=$curr_idx
-		fi
-	done
-	IFS=$old_IFS
-
-	echo $max_idx
+	CURRENT_AP_PATH="$ap_interface_path"
+	CURRENT_SSID_PATH="$ap_ssid_path"
+	CURRENT_AP_NAME=`ubus-cli $CURRENT_AP_PATH.Alias?`
+	CURRENT_AP_NAME=`echo $CURRENT_AP_NAME | cut -d"=" -f2 | tr -d '"'`
 }
 
 get_new_wlan_name_for_radio()
 {
 	local last_vap_idx="$1"
-	local base_wlan=`$UCI_CMD get wireless.default_radio${last_vap_idx}.ifname`
+	local cur_radio_path="$2"
+	local base_wlan=`eval ubus-cli $cur_radio_path.Alias? | grep wlan`
+	base_wlan=${base_wlan##*Alias=\"}
 	base_wlan=${base_wlan%%.*}
 
-	for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
 	do
 		local cur_wlan=$base_wlan.$i
-		local output=`uci show wireless | grep ifname=\'$cur_wlan\'`
+		local current_wlan=$base_wlan"_"$i
+		local output=`ifconfig | grep "$cur_wlan"`
 		if [ "$output" = "" ]; then
 			break
 		fi
 
-		if [ "$i" = "14" ]; then # 14 is the max vap allowed
+		if [ "$i" = "15" ]; then # 14 is the max vap allowed
 			cur_wlan="ERROR"
 		fi
 	done
-
-	echo $cur_wlan
+	echo $current_wlan
 }
 
 add_interface()
@@ -1329,58 +1299,45 @@ add_interface()
 	if [ "$1" != "" ]; then
 		local cur_radio_path=wireless.$1
 	else
-		local cur_radio_path=$CURRENT_RADIO_UCI_PATH
+		local cur_radio_path=$CURRENT_RADIO_PATH
 	fi
 
-	local cur_radio=`echo $cur_radio_path | awk -F"." '{print $2}'`
-	local last_vap_idx=`get_last_vap_for_radio $cur_radio`
-	local new_vap_idx=$((last_vap_idx+1))
+	local cur_radio=`echo $cur_radio_path | cut -d '.' -f 3`
+	[ "$cur_radio" == "1" ] && cur_radio="24G" && local current_radio_path=$CURRENT_24G_AP_PATH
+	[ "$cur_radio" == "2" ] && cur_radio="5G" && local current_radio_path=$CURRENT_5G_AP_PATH
+	[ "$cur_radio" == "3" ] && cur_radio="6G" && local current_radio_path=$CURRENT_6G_AP_PATH
 
-	last_vap="wireless.default_radio$last_vap_idx"
-	new_vap="wireless.default_radio$new_vap_idx"
+	last_ssid_idx=`ubus-cli 'WiFi.SSID.?' | grep Alias | sort -n | tail -1`
+	last_ssid_idx=${last_ssid_idx##*SSID.}
+	last_ssid_idx=${last_ssid_idx%%.Alias*}
+	
+	
+	[ "$cur_radio" == "24G" ] && local radio_idx=0
+	[ "$cur_radio" == "5G" ] && local radio_idx=2
+	[ "$cur_radio" == "6G" ] && local radio_idx=4
 
-	local last_vap_mac=`$UCI_CMD get $last_vap.macaddr`
-	local last_vap_flex_mac_hexa=`echo $last_vap_mac | awk -F":" '{print $6}'`
-	local last_vap_flex_mac="0x$last_vap_flex_mac_hexa"
-	tc_name=`get_test_case_name $glob_ssid`
-	#function called only for multibss enabled
-	if [ "$ucc_program" = "eht" -o "$ucc_program" = "he" -o "$tc_name" = "4.67.1" ]; then
-		local new_vap_flex_mac=`printf '%x' $((last_vap_flex_mac+1))`
-	else
-		local new_vap_flex_mac=`printf '%x' $((last_vap_flex_mac+2))`
-	fi
-	local new_vap_flex_mac_len=${#new_vap_flex_mac}
-
-	if [ $new_vap_flex_mac_len -eq 1 ]; then
-		new_vap_flex_mac="0$new_vap_flex_mac"
-	elif [ $new_vap_flex_mac_len -gt 2 ]; then
-		new_vap_flex_mac=`echo -n $new_vap_flex_mac | tail -c 2`
-	fi
-
-	local new_vap_mac=`echo $last_vap_mac | awk -F":" '{print $1 ":" $2 ":" $3 ":" $4 ":" $5 ":"}'`
-	new_vap_mac="$new_vap_mac$new_vap_flex_mac"
-
-	local new_wlan=`get_new_wlan_name_for_radio $last_vap_idx`
+	local new_wlan=`get_new_wlan_name_for_radio $last_ssid_idx $current_radio_path`
 
 	if [ "$new_wlan" = "ERROR" ]; then
 		error_print "No place for new VAP"
 		return
 	fi
 
-	$UCI_CMD set $new_vap='wifi-iface'
-	$UCI_CMD set $new_vap.device=$cur_radio
-	$UCI_CMD set $new_vap.ifname=$new_wlan
-	$UCI_CMD set $new_vap.macaddr=$new_vap_mac
-	$UCI_CMD set $new_vap.mode='ap'
-	local tmp=`$FACTORY_CMD vap $new_wlan`
-	sleep 1 # workaround , let vap factory uci configuration populate
-	$UCI_CMD set $new_vap.mode='ap' # make sure atleast mode is set else vap will not come up
-	if [ "$MODEL" != "AX11000" ] && [ "$MODEL" != "WAV700_AP" ] && [ "$OS_NAME" = "UGW" ]; then
-		chown rpcd:rpcd $UCI_DB_PATH/wireless
-		chmod +r $UCI_DB_PATH/wireless
-	fi
+	ret=`eval ubus call WiFi addVAPIntf \'{\"vap\"\: \"$new_wlan\", \"radio\"\: \"radio${radio_idx}\", \"bridge\"\: \"br-lan\"}\'`
+	sleep 10
+	
+	last_ap_idx=`ubus-cli 'WiFi.AccessPoint.?' | grep Alias | grep -v Point.1 | grep -v Point.9 | grep -v Point.17 | tail -1`
+	last_ap_idx=${last_ap_idx##*Point.}
+	new_ap_idx=${last_ap_idx%%.Alias*}
+	
+	new_ssid_idx=`ubus-cli 'WiFi.SSID.?' | grep Alias | grep -v SSID.1 | grep -v SSID.9 | grep -v SSID.17 | tail -1`
+	new_ssid_idx=${new_ssid_idx##*SSID.}
+	new_ssid_idx=${new_ssid_idx%%.Alias*}
 
-	echo $new_vap | awk -F"." '{print $2}'
+	eval CURRENT_${cur_radio}_AP_PATH_2="WiFi.AccessPoint.${new_ap_idx}"
+	eval CURRENT_${cur_radio}_SSID_PATH_2="WiFi.SSID.${new_ssid_idx}"
+	CURRENT_SSID_PATH_2="WiFi.SSID.${new_ssid_idx}"
+	CURRENT_AP_PATH_2="WiFi.AccessPoint.${new_ap_idx}"
 }
 
 create_interface()
@@ -1419,46 +1376,65 @@ create_interface()
 	fi
 }
 
+get_apqos_data_idx()
+{
+	case $1 in
+		vo)
+			ap_data_idx=0
+		;;
+		vi)
+			ap_data_idx=1
+		;;
+		be)
+			ap_data_idx=2
+		;;
+		bk)
+			ap_data_idx=3
+		;;
+	esac
+}
+
 get_uci_security_mode()
 {
 	upper "$1" ap_sigma_security_mode
 
 	case "$ap_sigma_security_mode" in
 		NONE)
-			ap_uci_security_mode="none"
+			ap_uci_security_mode="None"
 		;;
 		WPA-PSK)
-			ap_uci_security_mode="psk"
+			ap_uci_security_mode="WPA-Personal"
 		;;
 		WPA2-PSK)
-			ap_uci_security_mode="psk2"
+			ap_uci_security_mode="WPA2-Personal"
 		;;
 		WPA-ENT)
-			ap_uci_security_mode="wpa"
+			ap_uci_security_mode="WPA-Enterprise"
 		;;
 		WPA2-ENT)
-			ap_uci_security_mode="wpa2"
+			ap_uci_security_mode="WPA2-Enterprise"
 		;;
 		WPA2-PSK-MIXED)
-			ap_uci_security_mode="psk-mixed+tkip+ccmp"
+			ap_uci_security_mode="WPA-WPA2-Personal"
 		;;
 		WPA2-MIXED)
-			ap_uci_security_mode="wpa-mixed+tkip+ccmp"
+			ap_uci_security_mode="WPA-WPA2-Enterprise"
 		;;
 		WPA2-PSK-SAE)
-			ap_uci_security_mode="sae-mixed"
+			ap_uci_security_mode="WPA2-WPA3-Personal"
 		;;
 		SAE)
-			ap_uci_security_mode="sae"
+			ap_uci_security_mode="WPA3-Personal"
 		;;
 		OWE)
-			ap_uci_security_mode="owe"
+			ap_uci_security_mode="OWE"
 		;;
 		SUITEB)
 			ap_uci_security_mode="eap192"
 		;;
 		SAE-EXT-KEY)
-			ap_uci_security_mode="sae-ext-key"
+			ap_uci_security_mode="WPA3-Personal"
+			ap_sae_ext=1
 		;;
 		*)
 			error_print "Unsupported security mode: $ap_sigma_security_mode"
@@ -1518,6 +1494,26 @@ get_uci_pmf()
 			ap_uci_pmf=""
 		;;
 	esac
+}
+
+get_bandwidth()
+{
+	ap_band="$1"
+	if [ "$ap_band" = "20MHz" ]; then
+		ap_band=20
+	elif [ "$ap_band" = "40MHz" ]; then
+		ap_band=40
+	elif [ "$ap_band" = "80MHz" ]; then
+		ap_band=80
+	elif [ "$ap_band" = "160MHz" ]; then
+		ap_band=160
+	elif [ "$ap_band" = "320MHz-1" ]; then
+		ap_band=3201
+	elif [ "$ap_band" = "320MHz-2" ]; then
+		ap_band=3202
+	else
+		debug_print "Wrong Bandwidth COnfigured"
+	fi
 }
 
 get_freq_from_chan()
@@ -1598,24 +1594,6 @@ get_central_freq_vht()
 	esac
 }
 
-get_apqos_data_idx()
-{
-	case $1 in
-		vo)
-			ap_data_idx=0
-		;;
-		vi)
-			ap_data_idx=1
-		;;
-		be)
-			ap_data_idx=2
-		;;
-		bk)
-			ap_data_idx=3
-		;;
-	esac
-}
-
 set_uci_offset()
 {
 	ap_offset_mode=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.htmode`
@@ -1631,26 +1609,22 @@ set_uci_offset()
 
 config_neighbor()
 {
-	if [ $ap_neighbor_op_class != "" ] && [ $ap_neighbor_op_ch != "" ]; then
-		local op_class=`printf '%02x' $ap_neighbor_op_class`
-		local op_chan=`printf '%02x' $ap_neighbor_op_ch`
-    else
-		local band=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.band`
-		if [ "$band" = "5GHz" ]; then
-			local op_class=73
-			local op_chan=36
-		elif [ "$band" = "2.4GHz" ]; then
-			local op_class=51
-			local op_chan=01
-		elif [ "$band" = "6GHz" ]; then
-			local op_class=131
-			local op_chan=37
-		fi
+	local band=`ubus-cli $CURRENT_RADIO_PATH.OperatingFrequencyBand?`
+	band=`echo $band | cut -d"=" -f2 | tr -d '"'`
+	if [ "$band" = "5GHz" ]; then
+		local op_class=73
+		local op_chan=36
+	elif [ "$band" = "2.4GHz" ]; then
+		local op_class=51
+		local op_chan=01
+	elif [ "$band" = "6GHz" ]; then
+		local op_class=131
+		local op_chan=37
 	fi
 	local hex_pref=`printf '%02x' $ap_neighbor_pref`
 	local nr=`echo $ap_neighbor_bssid | sed 's/\://g'`
 	nr="${nr}00000000${op_class}${op_chan}070301${hex_pref}"
-	ap_cmd="$HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME set_neighbor_per_vap $CURRENT_IFACE_IFNAME $ap_neighbor_bssid ssid=\\\"MBO_NEIGHBOR\\\" nr=$nr"
+	ap_cmd="$HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME set_neighbor_per_vap $CURRENT_AP_NAME $ap_neighbor_bssid ssid=\\\"MBO_NEIGHBOR\\\" nr=$nr"
 	ap_tmp=`eval "$ap_cmd"`
 }
 
@@ -1698,9 +1672,12 @@ update_neighbor_pref()
 {
 	n_channel=$1
 	if [ "$n_channel" = "" ]; then
-		local wlan_2g=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.macaddr`
-		local wlan_5g=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-		local wlan_6g=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
+		wlan_2g_mac=`ubus-cli "$CURRENT_24G_SSID_PATH.BSSID?"`
+		local wlan_2g=`echo $wlan_2g_mac | cut -d"=" -f2 | tr -d '"'`
+		wlan_5g_mac=`ubus-cli "$CURRENT_5G_SSID_PATH.BSSID?"`
+		local wlan_5g=`echo $wlan_5g_mac | cut -d"=" -f2 | tr -d '"'`
+		wlan_6g_mac=`ubus-cli "$CURRENT_6G_SSID_PATH.BSSID?"`
+		local wlan_6g=`echo $wlan_6g_mac | cut -d"=" -f2 | tr -d '"'`
 	fi
 	local old_IFS=$IFS
 	IFS=$ORIG_IFS
@@ -1800,7 +1777,7 @@ run_dwpal_cli_cmd()
 			vap_is_up="1" #MBO Deamon doesn't set interface, no need to wait as it is in infinite loop
 		fi
 		if [ "$vap_is_up" -gt "0" ] ; then
-			if [ "$OS_NAME" = "UGW" ]; then
+			if [ "$OS_NAME" = "UPDK" ]; then
 				local _cmd="dwpal_cli"
 				while [ "$1" != "" ]; do
 					_cmd="$_cmd '$1'"
@@ -1840,37 +1817,35 @@ check_6g_tc()
 	fi
 }
 
+check_for_reload()
+{
+	val=`ubus-cli $CURRENT_RADIO_PATH.Vendor.EhtMacScsTrafficDesc?`
+	val=`echo $val | cut -d"=" -f2 | tr -d '"'`
+	if [ "$val" == "0" ]; then
+		eval ML_VAP1_PATH=\${CURRENT_${ML_VAP1}_AP_PATH}
+		val=`ubus-cli $ML_VAP1_PATH.Vendor.EhtMacEpcsPrioAccess?`
+		val=`echo $val | cut -d"=" -f2 | tr -d '"'`
+	fi
+	echo $val
+}
+
 ap_uci_commit_and_apply()
 {
-	ap_changes=`$UCI_CMD changes`
-	local _cmd="dwpal_cli"
-
-	if [ "$ucc_program" = "wpa3" ]; then
-		ap_tmp=`ap_config_transition_owe`
+	ap_tmp=`check_for_reload`
+	if [ "$ap_tmp" != "1" ]; then
+		ap_tmp=`eval $WIFI_RELOAD_CMD`
 	fi
-
-#	if [ `eval check_6g_tc` = "1" ]; then
-#		ap_tmp=`eval $UPDATE_RNR_UCI enable`
-#	fi
-
-	uci_commit_wireless
-	ap_tmp=`eval $WIFI_RELOAD_CMD`
-
-	if [ "$MODEL" == "AX11000" ] || [ "$MODEL" == "WAV700_AP" ]; then
-		[ -n "$ap_changes" ] && ap_tmp=`sh -c "export LD_LIBRARY_PATH=/opt/intel/lib; $_cmd -ihostap -mMain -vwlan0.0 -vwlan2.0 -dd -l"AP-ENABLED" -l"INTERFACE_RECONNECTED_OK""`
-	elif [ "$OS_NAME" = "UGW" ]; then
-		[ -n "$ap_changes" ] && ap_tmp=`sudo -u nwk sh -c "export LD_LIBRARY_PATH=/opt/intel/lib; $_cmd -ihostap -mMain -vwlan0.0 -vwlan2.0 -dd -l"AP-ENABLED" -l"INTERFACE_RECONNECTED_OK""`
-	fi
-
-	#WA in 6.1.1 to enable ICMP pings with frame size > 15000
-	if [ "$OS_NAME" = "UGW" ]; then
-		switch_cli GSW_QOS_METER_CFG_SET dev=1 nMeterId=33 nEbs=17000 nCbs=17000 > /dev/null 2>&1
-	fi
+	ap_tmp=`sh -c "export LD_LIBRARY_PATH=/opt/intel/lib; dwpal_cli -mMain -vwlan0.1 -vwlan2.1 -dd -l"AP-ENABLED" -l"INTERFACE_RECONNECTED_OK""`
 }
 
 arguments_file_initializer(){
 	echo "export current_radio=$1" >> /tmp/sigma_hf_arguments
 	echo "export glob_ssid=$2" >> /tmp/sigma_hf_arguments
+	echo "export current_ap_name=$3" >> /tmp/sigma_hf_arguments
+}
+
+plans_file_initializer(){
+	echo -e "export PLAN_COMMON_6G='$PLAN_COMMON_6G' \nexport PLAN_COMMON_5G='$PLAN_COMMON_5G' \nexport PLAN_COMMON_24G='$PLAN_COMMON_24G' \nexport PLAN_FOR_1_USER_5G='$PLAN_FOR_1_USER_5G' \nexport PLAN_FOR_2_USER_5G='$PLAN_FOR_2_USER_5G' \nexport PLAN_FOR_3_USER_5G='$PLAN_FOR_3_USER_5G' \nexport PLAN_FOR_4_USER_5G='$PLAN_FOR_4_USER_5G' \nexport PLAN_FOR_1_USER_6G='$PLAN_FOR_1_USER_6G' \nexport PLAN_FOR_2_USER_6G='$PLAN_FOR_2_USER_6G' \nexport PLAN_FOR_3_USER_6G='$PLAN_FOR_3_USER_6G' \nexport PLAN_FOR_4_USER_6G='$PLAN_FOR_4_USER_6G' \nexport PLAN_FOR_1_USER_24G='$PLAN_FOR_1_USER_24G' \nexport PLAN_FOR_2_USER_24G='$PLAN_FOR_2_USER_24G' \nexport PLAN_FOR_3_USER_24G='$PLAN_FOR_3_USER_24G' \nexport PLAN_FOR_4_USER_24G='$PLAN_FOR_4_USER_24G'" > /tmp/plans
 }
 
 ap_send_addba_req()
@@ -1882,7 +1857,8 @@ ap_send_addba_req()
 get_connected_stations()
 {
 	[ -z "$1" ] && echo "get_connected_stations: ERROR: Missing radio name" && return
-	vaps=`uci show wireless | grep ifname | grep $1 | cut -d"=" -f2 |grep "\." | tr -d "'"`
+	#vaps=`uci show wireless | grep ifname | grep $2 | cut -d"=" -f2 |grep "\." | tr -d "'"`
+	vaps=`ifconfig | grep $1 | cut -d" " -f1 | grep "\."`
 	connected_stations=0
 	for interface_name in $vaps; do
 		connected_stations_vap=`iw dev $interface_name station dump | grep -c Station`
@@ -1893,25 +1869,25 @@ get_connected_stations()
 
 refresh_static_plan()
 {
-	info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-	send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+	info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
+	send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 	connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 	if [ "$connected_stations" = "1" ] || [ "$connected_stations" = "2" ] || [ "$connected_stations" = "3" ] || [ "$connected_stations" = "4" ]; then
-		send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_UCI_PATH $glob_ssid $CURRENT_WLAN_NAME.0
+		send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_PATH $glob_ssid $CURRENT_WLAN_NAME.1 $CURRENT_IFACE_NAME
 	fi
 }
 
 refresh_static_plan_for_eht()
 {
 	CURRENT_WLAN_NAME=$1
-	CURRENT_RADIO_UCI_PATH=$2
+	CURRENT_IFACE_NAME=$2
 	connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 	if [ "$connected_stations" = "1" ] || [ "$connected_stations" = "2" ] || [ "$connected_stations" = "3" ] || [ "$connected_stations" = "4" ]; then
 		if [ "$global_emlsr_tb_ul_ofdma" != "1" ]; then
-			info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+			info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0}"
+			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 		fi
-		send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_UCI_PATH $glob_ssid $CURRENT_WLAN_NAME.0
+		send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_PATH $glob_ssid $CURRENT_WLAN_NAME.1 $CURRENT_IFACE_NAME
 	fi
 }
 
@@ -1945,11 +1921,8 @@ reload_driver_with_acceleration()
 
 enable_mld_t2lm_negotiation_support()
 {
-	local CURRENT_IFACE_UCI_PATH=$1
-	ap_get_debug_hostap_conf_idx=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-	let ap_get_debug_hostap_conf_idx=ap_get_debug_hostap_conf_idx+1
-	ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf_idx))"
-	$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_t2lm_support=1"
+	local CURRENT_IFACE_PATH=$1
+	ret=`ubus-cli $CURRENT_IFACE_PATH.Vendor.MloT2lmSupport=1`
 }
 
 set_mld_mediumsync_params()
@@ -2025,13 +1998,22 @@ check_and_update_prog_for_wifi7()
 		ap_eht_reset_default
 		force_ap_cleanup
 		sleep 10
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=1"`
+		sleep 5
+		ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.GroupCipher="CCMP"`
+		ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.GroupCipher="CCMP"`
+		ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.GroupCipher="CCMP"`
 
-		get_common_uci_path
-		
 		iw dev wlan0 iwlwav sDoSimpleCLI 129 1
 		iw dev wlan2 iwlwav sDoSimpleCLI 129 1
 		iw dev wlan4 iwlwav sDoSimpleCLI 129 1
 		upper "$ucc_program" ap_program
+
+		string1="protected"
+		string2="WiFi.Vendor.ModuleMode.WPA3CertMode=1"
+		string3="exit"
+
+		ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 	else
 		[ -e $FORCE_AKM_SUITE_TYPE_TO_SAE_AND_SAEEXTKEY_FILE_PATH ] && rm -rf $FORCE_AKM_SUITE_TYPE_TO_SAE_AND_SAEEXTKEY_FILE_PATH
 	fi
@@ -2049,6 +2031,15 @@ check_for_WiFi6R2_test_case()
 	debug_print "is R2 testcase: $is_wifi6r2_2gtc"
 }
 
+is_11n_testcase()
+{
+	if [ -e $N_TESTING_FILE_PATH ]
+	then
+		echo 1
+	else
+		echo 0
+	fi
+}
 
 ap_set_wireless()
 {
@@ -2057,18 +2048,10 @@ ap_set_wireless()
 	send_running
 
 	[ -z "$mlo_counter" ] && mlo_counter=0
+	[ -z "$mlo_id_counter" ] && mlo_id_counter=0
+	[ -z "$n_reset_counter" ] && n_reset_counter=0
 
-	get_common_uci_path
 	get_interface_details $@
-
-	ap_temp_ret=`$UCI_CMD get $CURRENT_IFACE_UCI_PATH 2>/dev/null`
-	if [ "$ap_temp_ret" = ""  ]; then
-		create_interface
-	fi
-
-	debug_print ap_radio_uci_path $CURRENT_RADIO_UCI_PATH
-	debug_print ap_interface_uci_path $CURRENT_IFACE_UCI_PATH
-	is_interface_known=`echo $@ | grep -i Interface`
 
 	while [ "$1" != "" ]; do
 		# for upper case only
@@ -2087,22 +2070,22 @@ ap_set_wireless()
 		;;
 		SSID)
 			glob_ssid="$1"
+			debug_print "set parameter ap_ssid=$1"
 			check_and_update_prog_for_wifi7 $glob_ssid  #This is required to pass the WPA3 certification tests in WiFi 7, Check the definition for detailed comments.
 			check_for_WiFi6R2_test_case $glob_ssid
 			static_plan_init_debug_infra
-			debug_print "set parameter ap_ssid=$1"
-			
+
 			tc_name=`get_test_case_name $glob_ssid`
 			if [ -z "$ap_non_tx_bss_index" ]; then
 				#Set SSID only for legacy programs
 				#SSID is set for EHT in the later part during MLD configurations
 				if [ "$ap_program" != "EHT" ]; then
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ssid=$1
+					ret=`ubus-cli "$CURRENT_SSID_PATH.SSID=\"$1\""`
 				else
-					arguments_file_initializer $CURRENT_RADIO_UCI_PATH $glob_ssid
+					arguments_file_initializer $CURRENT_RADIO_PATH $glob_ssid $CURRENT_IFACE_NAME
 				fi
-			fi 
-			
+			fi
+
 			if [ -z $global_num_non_tx_bss ]; then
 				if [ "$tc_name" = "4.68.1" ] || [ "$tc_name" = "5.73.1" ]; then
 					info_print "tc_name = $tc_name ==> set ap_ofdma='dl'"
@@ -2118,123 +2101,99 @@ ap_set_wireless()
 				fi
 			fi
 			if [ $ap_second_channel -gt 0 ]; then
-				$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.ssid=$1
-				$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.ssid=$1
+				ret=`ubus-cli "$CURRENT_5G_SSID_PATH.SSID=$1"`
+				ret=`ubus-cli "$CURRENT_24G_SSID_PATH.SSID=$1"`
 			else
 				if [ "$change_ssid_one_time" != "1" ]; then
 					if [ "$tc_name" = "4.67.1" ]; then
 						change_ssid_one_time=1
 					fi
-					[ -z "$ap_non_tx_bss_index" -a "$ap_program" != "EHT" ] && $UCI_CMD set $CURRENT_IFACE_UCI_PATH.ssid=$1
+					if [ -z "$ap_non_tx_bss_index" -a "$ap_program" != "EHT" ]; then
+						ret=`ubus-cli "$CURRENT_SSID_PATH.SSID=$1"`
+					fi
 				fi
 			fi
 			if [ "$glob_ssid" = "4.2.28" ]; then
-				$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.s11nProtection=2
-				$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.s11nProtection=2
+				$SEND_IW_WLAN0 s11nProtection 2
+				$SEND_IW_WLAN2 s11nProtection 2
 			fi
 			if [ "$ucc_program" = "vht" ]; then
 				if [ "$glob_ssid" = "VHT-4.2.5" ] || [ "$glob_ssid" = "VHT-4.2.5A" ] || [ "$glob_ssid" = "VHT-4.2.20" ] || [ "$glob_ssid" = "VHT-4.2.21" ] || [ "$glob_ssid" = "VHT-4.2.40" ]; then
 					info_print "Disable Aggr"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.sAggrConfig=0 1 64
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SetAggrConfig='0 1 64'"`
 				fi
 			fi
 			if [ "$glob_ssid" = "ioPL98=2bv" ] && [ $ap_channel -lt 36 ]; then
-				$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.vendor_vht=0			
-			fi
-			if [ "$glob_ssid" = "4.2.12" ]; then
-				$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.auth_cache=1
-			fi
-			if [ "$glob_ssid" = "WiFi1-4.2.6" -o "$glob_ssid" = "WiFi1-4.2.6E" ] && [ "$OS_NAME" = "RDKB" ]; then
-				cli system/extswitch/setMacAging 0 1
-			fi
-			tc_name=`get_test_case_name $glob_ssid`
-			if [ "$tc_name" = "4.44.1" ] && [ "$OS_NAME" = "RDKB" ]
-			then
-				cli sys/pp/setDefensiveMode 1
-			fi
-			#Workaround required for 11n-4.2.30_3SS AMSDU Rx test
-			if [ "$glob_ssid" = "4.2.30" ] && [ "$OS_NAME" = "RDKB" ]
-			then
-				cli sys/pp/setBridgeMode 1
+				ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.VendorVht=0"`
 			fi
 			if [ "$ap_program" != "EHT" ] && [ "$tc_name" = "4.14.1" ] && [ $ap_channel -lt 36 ]
 			then
 				iw dev $CURRENT_WLAN_NAME iwlwav sTxopConfig 0x1FF 0 32767 4
-				iw dev $CURRENT_WLAN_NAME iwlwav s11nProtection 1
+				iw dev $CURRENT_WLAN_NAME iwlwav s11nProtection 1
 			fi
 			if [ "$ap_program" = "EHT" ] && [ "$tc_name" = "4.2.1" ]; then
-				iw dev $CURRENT_24G_WLAN_NAME iwlwav sTxopConfig 0x1FF 0 32767 4
-				iw dev $CURRENT_24G_WLAN_NAME iwlwav s11nProtection 1
-				iw dev $CURRENT_5G_WLAN_NAME iwlwav sTxopConfig 0x1FF 0 32767 4
-				iw dev $CURRENT_5G_WLAN_NAME iwlwav s11nProtection 1
-				iw dev $CURRENT_6G_WLAN_NAME iwlwav sTxopConfig 0x1FF 0 32767 4
-				iw dev $CURRENT_6G_WLAN_NAME iwlwav s11nProtection 1
+				$SEND_IW_WLAN0 sTxopConfig 0x1FF 0 32767 4
+				$SEND_IW_WLAN0 s11nProtection 1
+				$SEND_IW_WLAN2 sTxopConfig 0x1FF 0 32767 4
+				$SEND_IW_WLAN2 s11nProtection 1
+				$SEND_IW_WLAN4 sTxopConfig 0x1FF 0 32767 4
+				$SEND_IW_WLAN4 s11nProtection 1
 			fi
 			# on WAVE700, disabled BA as workaround for the test VHT 4.2.58, VHT 4.2.42, WLANRTSYS-54023
 			if [ "$MODEL" = "WAV700_AP" ] && [ "$glob_ssid" = "VHT-4.2.58" -o "$glob_ssid" = "VHT-4.2.42" ]; then
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.sAggrConfig=1 0 256
+				ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SetAggrConfig='1 0 256'"`
 			fi
-			if [ "$glob_ssid" = "HE-4.31.1_24G" ]; then
-				if [ "$OS_NAME" = "UGW" ]; then #on LGM, beerocks is disabled else use root user instead sscripts
-					ap_tmp=`sudo -u sscript -- /etc/init.d/prplmesh stop`
+			if [ "$glob_ssid" = "HE-4.31.1_24G" ]; then # beerocks is disabled else use root user instead sscripts
+					ap_tmp=`/etc/init.d/prplmesh stop`
 					sleep 3 # wait for process to stop
-				elif [ "$OS_NAME" = "RDKB" ]; then
-					ap_tmp=`systemctl stop systemd-prplmesh.target`
-					sleep 3 # wait for process to stop
-				fi
-			fi
-			if [ "$glob_ssid" = "NVCX@7" -a "$OS_NAME" = "RDKB" ]; then
-				iptables -t mangle -D FORWARD -m state ! --state NEW -j DSCP --set-dscp 0x00
-				iptables -t mangle -D FORWARD -m state --state NEW -j DSCP --set-dscp 0x14
-				cli system/pp/setProtSesTimeout UDP 20
 			fi
 			#Workaround for legacy 11n/11ac where wlan4 interface doesnt come and so MODEL is not set
 			atom_cpu=`version.sh | grep "CPU:" | grep -i atom`
 			if [ -n "$atom_cpu" ]; then
 				if [ "$hw_type" = "0x70" ] || [ "$hw_type" = "0x71" ] || [ "$hw_type" = "0x72" ]; then
 					MODEL="WAV700_AP"
-				else
-					MODEL="AX11000"
 				fi
 			fi
-			if [ "$glob_ssid" = "4.2.3" -a "$OS_NAME" = "RDKB" ]; then
-				debug_print "reload driver with acceleration disable"
-				reload_driver_with_acceleration 0
-			elif [ -f "/tmp/driver_reload" ]; then
+			if [ -f "/tmp/driver_reload" ]; then
 				reload_driver_with_acceleration 1
 			fi
-
 		;;
 		CHANNEL)
 			debug_print "set parameter ap_channel=$1"
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.channel=$ap_channel
+			local is_11n=`is_11n_testcase`
+			if [ $is_11n -eq 1 ] && [ $n_reset_counter -eq 0 ]; then
+				n_reset_counter=$((n_reset_counter+1))
+				ucc_program="11n"
+				restore_default_config
+				ap_11n_reset_default
+			fi
+			#Adding sleep of 10 seconds to make sure that interfaces are up before configuring channel
+			sleep 10
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Channel=$ap_channel"`
 			if [ "$ap_channel" -ge "50" -a "$ap_channel" -le "144" ]; then
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.doth=1
 				iw dev $CURRENT_WLAN_NAME iwlwav s11hChCheckTime 1
 				iw dev $CURRENT_WLAN_NAME iwlwav s11hRadarDetect 0
 			fi
 			if [ $ap_second_channel -gt 0 ]; then
-				if [ "$ap_radio_5g_uci_path" = "$CURRENT_RADIO_UCI_PATH" ]; then
-					$UCI_CMD set $ap_radio_24g_uci_path.channel=$ap_second_channel
+				if [ "$CURRENT_5G_RADIO_PATH" = "$CURRENT_RADIO_PATH" ]; then
+					ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=$ap_second_channel"`
 				else
-					$UCI_CMD set $ap_radio_5g_uci_path.channel=$ap_second_channel
+					ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=$ap_second_channel"`
 				fi
 			fi
+			sleep 10
 		;;
 		MODE)
 			debug_print "set parameter glob_ap_mode=$1"
 			glob_ap_mode=$1
-			debug_print "ap mode is set to : $glob_ap_mode"
-			#TODO: currently there is no need to support this
-			#$UCI_CMD set $ap_radio_uci_path.hwmode=$1
 		;;
 		WME)
 			debug_print "set parameter ap_wme=$1"
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.wmm=$1
+			ret=`ubus-cli "$CURRENT_AP_PATH.WMMEnable=$1"`
 		;;
 		WMMPS)
 			debug_print "set parameter ap_wmmps=$1"
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.uapsd_advertisement_enabled=$1
+			ret=`ubus-cli "$CURRENT_AP_PATH.UAPSDEnable=$1"`
 		;;
 		RTS)
 			# param not supported
@@ -2255,35 +2214,43 @@ ap_set_wireless()
 		BCNINT)
 			debug_print "set parameter ap_bcnint=$1"
 			if [ "$ap_program" = "EHT" ]; then
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.beacon_int=$1
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.beacon_int=$1
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.beacon_int=$1
+				string1="$CURRENT_24G_RADIO_PATH.BeaconPeriod=$1"
+				string2="$CURRENT_5G_RADIO_PATH.BeaconPeriod=$1"
+				string3="$CURRENT_6G_RADIO_PATH.BeaconPeriod=$1"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			else
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.beacon_int=$1
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.BeaconPeriod=$1"`
 			fi
 		;;
 		DTIM)
 			debug_print "set parameter ap_dtim=$1"
 			if [ "$ap_program" = "EHT" ] && [ "$ap_interface" = "" ]; then
-				$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.dtim_period=$1
-				$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.dtim_period=$1
-				$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.dtim_period=$1
+				string1="$CURRENT_24G_RADIO_PATH.DTIMPeriod=$1"
+				string2="$CURRENT_5G_RADIO_PATH.DTIMPeriod=$1"
+				string3="$CURRENT_6G_RADIO_PATH.DTIMPeriod=$1"
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			else
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.dtim_period=$1
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.DTIMPeriod=$1"`
 			fi
+			sleep 5
 		;;
 		ECSA_IE)
 			debug_print "set parameter advertise_ecsa_ie=$1"
-			local ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'advertise_ecsa_ie' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			if [ "$ap_interface" = "" ]; then
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="advertise_ecsa_ie=$1"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="advertise_ecsa_ie=$1"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="advertise_ecsa_ie=$1"
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.AdvertiseEcsaIe=$1"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.AdvertiseEcsaIe=$1"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.AdvertiseEcsaIe=$1"
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			else
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="advertise_ecsa_ie=$1"
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.AdvertiseEcsaIe=$1"`
 			fi
 		;;
 		SGI20)
+#TODO-Imp
 			debug_print "set parameter ap_sgi20=$1"
 			lower "$1" ap_enable_input
 			if [ "$ap_enable_input" = "enable" ]; then
@@ -2294,6 +2261,7 @@ ap_set_wireless()
 			$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.short_gi_20=$ap_sgi_20
 		;;
 		SGI40)
+#TODO-Imp
 			debug_print "set parameter ap_sgi40=$1"
 			lower "$1" ap_enable_input
 			if [ "$ap_enable_input" = "enable" ]; then
@@ -2304,6 +2272,7 @@ ap_set_wireless()
 			$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.short_gi_40=$ap_sgi_40
 		;;
 		SGI80)
+#TODO-Imp
 			debug_print "set parameter ap_sgi80=$1"
 			lower "$1" ap_enable_input
 			if [ "$ap_enable_input" = "enable" ]; then
@@ -2329,34 +2298,30 @@ ap_set_wireless()
 			fi
 			ap_sBfMode_local=`convert_bf_mode $ap_tx_bf_val`	
 			debug_print "converted ap_sBfMode_local=$ap_sBfMode_local"
-			ap_debug_iw_post_up_idx=`uci show wireless | grep $CURRENT_RADIO_UCI_PATH | grep debug_iw_post_up | cut -d"=" -f 1 | cut -d"_" -f5 | sort -n | tail -1`
-			if [ -z "$ap_debug_iw_post_up_idx" ]; then
-				ap_debug_iw_post_up_idx=1
-			else
-				let "ap_debug_iw_post_up_idx=ap_debug_iw_post_up_idx+1"
-			fi
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_iw_post_up_$ap_debug_iw_post_up_idx="sBfMode $ap_sBfMode_local"
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.SetBfMode=$ap_sBfMode_local"`
 		;;
 		BW_SGNL)
 			debug_print "set parameter ap_bw_sgnl=$1"
 		;;
 		DYN_BW_SGNL)
+#TODO-Imp
 			debug_print "set parameter ap_dyn_bw_sgnl=$1"
 			if [ "$1" = "enable" ]; then
 					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.debug_hostap_conf_1="sRTSmode=1 0"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.s11nProtection=2
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.Set11nProtection=2"`
 			elif [ "$1" = "disable" ]; then
 					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.debug_hostap_conf_1="sRTSmode=0 1"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.s11nProtection=2
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.Set11nProtection=2"`
 					iw dev wlan0 iwlwav sOnlineACM 0
 					iw dev wlan2 iwlwav sOnlineACM 0
 			fi
 		;;
 		STBC_RX)
 			debug_print "set parameter ap_stbc_rx=$1"
-			$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.rx_stbc=$1
+			#This is not supported in the latest boards, it was suppported till gen5 only
 		;;
 		RADIO)
+#TODO-Imp
 			debug_print "set parameter ap_radio=$1"
 			if [ "$1" = "off" ]; then
 				ap_radio_op="down"
@@ -2414,19 +2379,23 @@ ap_set_wireless()
 		WIDTH)
 			debug_print "set parameter ap_width=$1"
 			ap_width=$1
-			ap_curr_mode=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.htmode`
-			ap_curr_prefix=`echo "${ap_curr_mode//[^[:alpha:]]/}"`
-			if [ "$ap_width" = "320" ]; then
-				[ "$ap_channel_freq" = "6105" ] && $UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode="EHT320_1"
-				[ "$ap_channel_freq" = "6265" ] && $UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode="EHT320_2"
+			if [ "$ap_width" = "20" ]; then
+				width_val="20MHz"
+			elif [ "$ap_width" = "40" ]; then
+				width_val="40MHz"
+			elif [ "$ap_width" = "80" ]; then
+				width_val="80MHz"
+			elif [ "$ap_width" = "160" ]; then
+				width_val="160MHz"
+			elif [ "$ap_width" = "320" ]; then
+				[ "$ap_channel_freq" = "6105" ] && width_val="320MHz-1"
+				[ "$ap_channel_freq" = "6265" ] && width_val="320MHz-2"
 			else
-				if [ "$ucc_program" = "eht" ] && [ "$ap_width" = "40" ]; then
-					[ "$ap_interface" = "5G" ] && $UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode=${ap_curr_prefix}40+
-					[ "$ap_interface" = "6G" ] && $UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode=${ap_curr_prefix}40-
-				else
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode=$ap_curr_prefix$1
-				fi
+				width_val="Auto"
 			fi
+			debug_print "ap_width:$ap_width"
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.OperatingChannelBandwidth=$width_val"`
+			sleep 5
 		;;
 		OFFSET)
 			debug_print "set parameter ap_offset=$1"
@@ -2442,15 +2411,17 @@ ap_set_wireless()
 		;;
 		COUNTRYCODE)
 			debug_print "set parameter ap_countrycode=$1"
-			radios=`uci show wireless | grep country | cut -d"." -f1-2`
-			for radio in $radios
-			do
-				$UCI_CMD set $radio.country=$1
-			done
-			radio_6ghz_disabled=`uci show wireless | grep 6GHz | cut -d"." -f1-2`
-			$UCI_CMD set $radio_6ghz_disabled.disabled='1' #currently 6GHz channel support not defined for all countrycode
-	;;
-		REG_DOMAIN) ## NB: Extension parameter
+			ap_countrycode=$1
+			string1="$CURRENT_24G_RADIO_PATH.RegulatoryDomain=$ap_countrycode"
+			string2="$CURRENT_5G_RADIO_PATH.RegulatoryDomain=$ap_countrycode"
+			string3="$CURRENT_6G_RADIO_PATH.Enable=0" #currently 6GHz channel support not defined for all countrycode
+			string4="exit"
+
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+			sleep 35
+		;;
+		REG_DOMAIN)
+			## NB: Extension parameter
 			# country3 value represents the environment of countrycode.
 			# "0x04" represents Global operating class
 			if [ "$ucc_program" = "eht" ]; then
@@ -2458,19 +2429,22 @@ ap_set_wireless()
 				lower "$1" ap_reg_domain
 				lower "$1" global_ap_reg_domain
 				if [ "$ap_reg_domain" = "global" ] ; then
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.country3="0x04"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.country3="0x04"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.country3="0x04"
+					string1="$CURRENT_24G_RADIO_PATH.Vendor.Country3=0x04"
+					string2="$CURRENT_5G_RADIO_PATH.Vendor.Country3=0x04"
+					string3="$CURRENT_6G_RADIO_PATH.Vendor.Country3=0x04"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+					sleep 5
 				fi
 			fi
 		;;
 		CELLULAR_CAP_PREF)
 			debug_print "set parameter ap_cellular_cap_pref=$1"
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.mbo_cell_aware=1
+			ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.MboCellAware=1"`
 		;;
 		GAS_CB_DELAY)
 			debug_print "set parameter ap_gas_cb_delay=$1"
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.gas_comeback_delay=$1
+			ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.GasCBDelay=$1"`
 		;;
 		DOMAIN)
 			debug_print "set parameter ap_domain=$1"
@@ -2480,12 +2454,15 @@ ap_set_wireless()
 			debug_print "set parameter ap_ft_oa=$1"
 			lower "$1" ap_enable_input
 			if [ "$ap_enable_input" = "enable" ]; then
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ieee80211r=1
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ft_over_ds=0
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.nasid=CGR-APUT.intel.com
+				string1="$CURRENT_AP_PATH.IEEE80211r.Enabled=1"
+				string2="$CURRENT_AP_PATH.IEEE80211r.FTOverDSEnable=0"
+				string3="$CURRENT_AP_PATH.IEEE80211r.NASIdentifier=CGR-APUT.intel.com"
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			else
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ieee80211r=0
+				ret=`ubus-cli "$CURRENT_AP_PATH.IEEE80211r.Enabled=0"`
 			fi
+			sleep 5
 		;;
 		FT_BSS_LIST)
 			debug_print "set parameter ap_ft_bss_list=$1"
@@ -2548,19 +2525,33 @@ ap_set_wireless()
 			debug_print "set parameter ap_fils_dscv=$1"
 			lower "$1" ap_fils_dscv
 			if [ "$ap_fils_dscv" = "enable" ]; then
-				ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame fils`
-			else
-				ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame disable`
-			fi
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='FILSDiscovery'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=20"
+				else
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='Default'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
+				fi
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 5
 		;;
 		UNSOLICITEDPROBERESP)
 			debug_print "set parameter ap_unsolicitedproberesp=$1"
 			lower "$1" ap_unsolicitedproberesp
 			if [ "$ap_unsolicitedproberesp" = "enable" ]; then
-				ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame probe`
-			else
-				ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame disable`
-			fi
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='UPR'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=20"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
+				else
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='Default'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
+				fi
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 5
 		;;
 		CADENCE_UNSOLICITEDPROBERESP)
 			debug_print "set parameter ap_cadence_unsolicitedproberesp=$1"
@@ -2570,7 +2561,6 @@ ap_set_wireless()
 		ACTIVEIND_UNSOLICITEDPROBERESP)
 			debug_print "set parameter ap_activeind_unsolicitedproberesp=$1"
 			lower "$1" ap_activeind_unsolicitedproberesp
-			#ap_tmp=`eval $UPDATE_RNR_UCI enable`
 		;;
 		FILSDSCVINTERVAL)
 			debug_print "set parameter ap_fils_dscv_interval=$1"
@@ -2589,11 +2579,7 @@ ap_set_wireless()
 		RNR)
 			debug_print "set parameter ap_rnr=$1"
 			lower "$1" ap_rnr
-#			if [ "$ap_rnr" = "enable" ]; then
-#				ap_tmp=`eval $UPDATE_RNR_UCI enable`
-#			elif [ "$ap_rnr" = "disable" ]; then
-#				ap_tmp=`eval $UPDATE_RNR_UCI disable`
-#			fi
+
 		;;
 		DEAUTHDISASSOCTX)
 			debug_print "set parameter ap_deauth_disassoc_tx=$1"
@@ -2692,7 +2678,13 @@ ap_set_wireless()
 			debug_print "set parameter ap_ppdutxtype=$1"
 			ap_ppdutxtype=$1
 			if [ "$ap_ppdutxtype" = "SU" ]; then
-				ap_tmp=`eval $UPDATE_RNR_UCI he_beacon enable`
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.HeBeacon=1"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.HeBeacon=1"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.HeBeacon=1"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 5
 			fi
 		;;
 		SPECTRUMMGT)
@@ -2827,13 +2819,7 @@ ap_set_wireless()
 			debug_print "set parameter global_ap_mimo=$1"
 			lower "$1" global_ap_mimo
 			if [ "$global_ap_mimo" = "ul" ]; then
-				ap_debug_iw_post_up_idx=`uci show wireless | grep $CURRENT_RADIO_UCI_PATH | grep debug_iw_post_up | cut -d"=" -f 1 | cut -d"_" -f5 | sort -n | tail -1`
-				if [ -z "$ap_debug_iw_post_up_idx" ]; then
-					ap_debug_iw_post_up_idx=1
-				else
-					ap_debug_iw_post_up_idx=$((ap_debug_iw_post_up_idx+1))
-				fi
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_iw_post_up_$ap_debug_iw_post_up_idx="sDoSimpleCLI 3 13 2000 0"
+				iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 3 13 2000 0
 			fi
 		;;
 		TWT_RESPSUPPORT)
@@ -2852,9 +2838,7 @@ ap_set_wireless()
 			debug_print "set parameter global_ap_mbssid=$1"
 			lower "$1" global_ap_mbssid
 			[ "$global_ap_mbssid" != "enable" ] && global_ap_mbssid=""
-#			if [ "$global_ap_mbssid" = "enable" -a `eval check_6g_tc` = "1" ]; then
-#				ap_tmp=`eval $UPDATE_RNR_UCI enable`
-#			fi
+
 		;;
 		NUMNONTXBSS)
 			([ $1 -lt 1 ] || [ $1 -gt 7 ]) && error_print "NumNonTxBSS invalid value '$1'" && send_invalid ",errorCode,95" && return
@@ -2910,17 +2894,27 @@ ap_set_wireless()
 		BAND6GONLY)
 			debug_print "set parameter ap_band6gonly=$1"
 			lower "$1" ap_band6gonly
-			iw wlan0 iwlwav sEnableRadio 0
-			iw wlan2 iwlwav sEnableRadio 0
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Enable=0"`
+			sleep 4
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Enable=0"`
+			sleep 4
 			# Enable UPR for DUT mode and FILS for testbed mode by default in BAND6GONLY scenario
 			# Check if there was an explicit configuration prior to BAND6GONLY to avoid override of config
-			local ap_curr_unsolicited_mode=`$UCI_CMD get $ap_radio_6g_uci_path.unsolicited_frame_support`
-			if [ "$ap_curr_unsolicited_mode" = "0" ] || [ "$ap_curr_unsolicited_mode" = "" ]; then
+			local ap_curr_unsolicited_mode=`ubus-cli $CURRENT_6G_AP_PATH.DiscoveryMethodEnabled?`
+			ap_curr_unsolicited_mode=`echo $ap_curr_unsolicited_mode | cut -d"=" -f2 | tr -d '"'`
+			if [ "$ap_curr_unsolicited_mode" = "Default" ] || [ "$ap_curr_unsolicited_mode" = "" ]; then
 				if [ "$ucc_type" = "dut" ]; then
-					ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame probe`
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='UPR'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=20"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
 				else
-					ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame fils`
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='FILSDiscovery'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=20"
 				fi
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 5
 			fi
 		;;
 		EXPBCNLENGTH)
@@ -3134,8 +3128,8 @@ ap_set_wireless()
 			elif [ "$ap_width" = "160" ]; then
 				width_val="160MHz"
 			elif [ "$ap_width" = "320" ]; then
-				[ "$ap_channel_freq" = "6105" ] && width_val="320_1MHz"
-				[ "$ap_channel_freq" = "6265" ] && width_val="320_2MHz"
+				[ "$ap_channel_freq" = "6105" ] && width_val="320MHz-1"
+				[ "$ap_channel_freq" = "6265" ] && width_val="320MHz-2"
 			else
 				debug_print "ap_width:$ap_width"
 				width_val="Auto"
@@ -3150,48 +3144,44 @@ ap_set_wireless()
 		elif [ "$ap_program" = "HE" ]; then
 			iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 130 1
 		fi
-
 		if [ "$width_val" != "" ]; then
 			convert_fixed_rate ${width_val}
-			[ "$ap_program" != "EHT" ] && set_get_helper_non_debug $CURRENT_RADIO_UCI_PATH.sFixedRateCfg x2=$bw_converted
+			[ "$ap_program" != "EHT" ] && set_get_helper_non_debug "FIXED_RATE_CFG_${CURRENT_IFACE_NAME}" x2=$bw_converted
 
 			# Only in 160 MHz / 5GHz, change channel check time to 1 sec to save configuration time.
 			# and disable radar detection to ensure no radar is detected during test and BW stays at 160MHz.
 			tc_name=`get_test_case_name $glob_ssid`
 			if [ "$width_val" = "160MHz" ] || [ "$tc_name" = "4.60.1" ]; then
-				ap_band=`eval $UCI_CMD show $CURRENT_RADIO_UCI_PATH.band | cut -d"=" -f2 | tr -d "'"`
-				ap_channel=`eval $UCI_CMD show $CURRENT_RADIO_UCI_PATH.channel | cut -d"=" -f2 | tr -d "'"`
-				if [ "$ap_channel" -ge "36" ] && [ "$ap_band" = "5GHz" ]; then
-					$UCI_CMD set ${CURRENT_RADIO_UCI_PATH}.doth=1
+				ap_channel=`ubus-cli $CURRENT_RADIO_PATH.Channel?`
+				ap_channel=`echo $ap_channel | cut -d"=" -f2 | cut -d" " -f1 | head -n 1`
+				if [ "$ap_channel" -ge "36" ] && [ "$CURRENT_IFACE_NAME" = "5G" ]; then
 					iw dev $CURRENT_WLAN_NAME iwlwav s11hChCheckTime 1
 					iw dev $CURRENT_WLAN_NAME iwlwav s11hRadarDetect 0
 				fi
 			fi
-			
-			# if static plan is on, turn it off, since we are going to change band (SMD will turn it back on).
-			info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
 
+			# if static plan is on, turn it off, since we are going to change band (SMD will turn it back on).
+			info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0}"
+			send_plan_off $CURRENT_WLAN_NAME $CURRENT_IFACE_NAME
 			[ "$width_val" = "20MHz" ] && ap_txop_com_start_bw_limit=0
 			[ "$width_val" = "40MHz" ] && ap_txop_com_start_bw_limit=1
 			[ "$width_val" = "80MHz" ] && ap_txop_com_start_bw_limit=2
 			[ "$width_val" = "160MHz" ] && ap_txop_com_start_bw_limit=3
 			#Host/FW interface is configured with only one bandwidth value(4) for both 320MHz-1 and 320MHz-2 channel
-			[ "$width_val" = "320_1MHz" ] && ap_txop_com_start_bw_limit=4
-			[ "$width_val" = "320_2MHz" ] && ap_txop_com_start_bw_limit=4
+			[ "$width_val" = "320MHz-1" ] && ap_txop_com_start_bw_limit=4
+			[ "$width_val" = "320MHz-2" ] && ap_txop_com_start_bw_limit=4
 
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x${txop_com_start_bw_limit_idx}=${ap_txop_com_start_bw_limit}
+			set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${txop_com_start_bw_limit_idx}=${ap_txop_com_start_bw_limit}
 		fi
-		
+
 		## WA WLANRTSYS-13765 for TC 4.31.1 and 4.52.1_5G - set fixed rate with 2NSS.
 		tc_name=`get_test_case_name $glob_ssid`
 		if [ "$tc_name" = "4.31.1" ] ; then
 			convert_fixed_rate ${ap_txbandwidth} "ax"
-			set_get_helper_non_debug $CURRENT_RADIO_UCI_PATH.sFixedRateCfg x1=0 x2=${bw_converted} x3=4 x4=2 x5=11 x6=2
+			set_get_helper_non_debug "FIXED_RATE_CFG_${CURRENT_IFACE_NAME}" x1=0 x2=${bw_converted} x3=4 x4=2 x5=11 x6=2
 		elif [ "$tc_name" = "4.52.1" ] && [ $ap_channel -ge "36" ]; then
 			onvert_fixed_rate ${ap_txbandwidth} "ax"
-			set_get_helper_non_debug $CURRENT_RADIO_UCI_PATH.sFixedRateCfg x1=0 x2=${bw_converted} x3=4 x4=2 x5=11 x6=2
+			set_get_helper_non_debug "FIXED_RATE_CFG_${CURRENT_IFACE_NAME}" x1=0 x2=${bw_converted} x3=4 x4=2 x5=11 x6=2
 		fi
 		#To set the DL-MIMO when TXBF and MU_TXBF parameters are provided in the CAPIs
 		#as there is no other parameter to configure the same
@@ -3210,30 +3200,29 @@ ap_set_wireless()
 				if [ "$ap_program" != "EHT" ]; then
 					get_nof_sta_per_he_test_case $glob_ssid
 					ap_num_users_ofdma=$nof_sta
-					arguments_file_initializer $CURRENT_RADIO_UCI_PATH $glob_ssid
+					arguments_file_initializer $CURRENT_RADIO_PATH $glob_ssid $CURRENT_IFACE_NAME
 					kill_sigmaManagerDaemon
 					if [ -z "$global_ap_mbssid_mu" ] || [ "$global_ap_mbssid_mu" != "1" ]; then
-						/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.0 $ap_num_users_ofdma &
+						/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.1 $ap_num_users_ofdma &
 					fi
 
 					if [ "$ap_ofdma" = "dl" ]; then
 						glob_ofdma_phase_format=0
 					elif [ "$ap_ofdma" = "ul" ]; then
-						glob_ofdma_phase_format=1 		
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x7=1
+						glob_ofdma_phase_format=1
+						set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=5 x7=1
 					fi
 
 					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-					set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
+					set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x4=${glob_ofdma_phase_format}
 					if [ "$ap_num_users_ofdma" != "" ]; then
-						set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
+						set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x5=${ap_num_users_ofdma}
 					else
 						if [ "$glob_ssid" != "" ]; then
 							# check if num_of_users can be obtained from the predefined list (by test plan)
 							get_nof_sta_per_he_test_case $glob_ssid
 							ap_num_users_ofdma=$nof_sta
-							[ "$ap_num_users_ofdma" != "0" ] && set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
+							[ "$ap_num_users_ofdma" != "0" ] && set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x5=${ap_num_users_ofdma}
 						fi
 					fi
 					if [ "$ap_program" = "HE" ] && [ "$ap_ofdma" = "ul" ]; then
@@ -3253,28 +3242,18 @@ ap_set_wireless()
 					if [ "$ap_ofdma" = "dl" ]; then
 						glob_ofdma_phase_format=0
 					elif [ "$ap_ofdma" = "ul" ]; then
-						glob_ofdma_phase_format=1 		
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_24G_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x7=1
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_5G_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x7=1
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_6G_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x7=1
+						glob_ofdma_phase_format=1
+						set_get_helper "PLAN_COMMON_24G" x2=5 x7=1
+						set_get_helper "PLAN_COMMON_5G" x2=5 x7=1
+						set_get_helper "PLAN_COMMON_6G" x2=5 x7=1
 					fi
 
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_24G_RADIO_UCI_PATH`
-					set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_5G_RADIO_UCI_PATH`
-					set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_6G_RADIO_UCI_PATH`
-					set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
-
-					set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
-					set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
-					set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
+					set_get_helper "PLAN_COMMON_24G" x4=${glob_ofdma_phase_format} x5=${ap_num_users_ofdma}
+					set_get_helper "PLAN_COMMON_5G" x4=${glob_ofdma_phase_format} x5=${ap_num_users_ofdma}
+					set_get_helper "PLAN_COMMON_6G" x4=${glob_ofdma_phase_format} x5=${ap_num_users_ofdma}
 				else
 					debug_print "Wrong Program Name"
-				fi		
+				fi
 			else
 				error_print "Unsupported value - ap_ofdma:$ap_ofdma"
 				send_error ",errorCode,150"
@@ -3284,12 +3263,12 @@ ap_set_wireless()
 			# set fixed rate for OFDMA MU
 			info_print "sDoSimpleCLI 70 1"
 			if [ "$ap_program" != "EHT" ]; then
-				uci set $CURRENT_RADIO_UCI_PATH.debug_iw_post_up_2="sDoSimpleCLI 70 1"
+				iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 70 1
 			else
-				uci set $CURRENT_24G_RADIO_UCI_PATH.debug_iw_post_up_2="sDoSimpleCLI 70 1"
-				uci set $CURRENT_5G_RADIO_UCI_PATH.debug_iw_post_up_2="sDoSimpleCLI 70 1"
-				uci set $CURRENT_6G_RADIO_UCI_PATH.debug_iw_post_up_2="sDoSimpleCLI 70 1"
-			fi	
+				$SEND_IW_WLAN0 sDoSimpleCLI 70 1
+				$SEND_IW_WLAN2 sDoSimpleCLI 70 1
+				$SEND_IW_WLAN4 sDoSimpleCLI 70 1
+			fi
 		fi
 
 		# Set coding (LDPC/BCC) for DL
@@ -3312,46 +3291,49 @@ ap_set_wireless()
 				# set for SU, only if not OFDMA MU TC
 				if [ "$glob_ofdma_phase_format" = "" ]; then
 					if [ "$ap_program" != "EHT" ]; then
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.ldpc=1
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.rxldpc=1
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_ldpc_coding_in_payload' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_ldpc_coding_in_payload=1"
+						string1="$CURRENT_RADIO_PATH.Vendor.HePhyLdpcCodingInPayload=1"
+						string2="protected"
+						string3="$CURRENT_RADIO_PATH.Vendor.HtCapabilities.Ldpc=1"
+						string4="$CURRENT_RADIO_PATH.Vendor.VhtCapabilities.Rxldpc=1"
+						string5="exit"
+						ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
 					else
 						#Do nothing because it is setted to 1 in our default DB
 						debug_print "Do Nothing"
 					fi
 				fi
-				
+
 				# set for MU
 				for usr_index in 1 2 3 4
 				do
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$ap_usr_index"  x18=1
+					set_get_helper "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x18=1
 				done
 			elif [ "$ap_bcc" = "enable" ]; then
 				# set for SU, only if not OFDMA MU TC
-				if [ "$glob_ofdma_phase_format" = "" ]; then 
+				if [ "$glob_ofdma_phase_format" = "" ]; then
 					if [ "$ap_program" != "EHT" ]; then
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.ldpc=0
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.rxldpc=0
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_ldpc_coding_in_payload' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_ldpc_coding_in_payload=0"
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'enable_he_debug_mode' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="enable_he_debug_mode=1"
+						string1="$CURRENT_RADIO_PATH.Vendor.HePhyLdpcCodingInPayload=0"
+						string2="$CURRENT_RADIO_PATH.Vendor.EnableHeDebugMode=1"
+						string3="protected"
+						string4="$CURRENT_RADIO_PATH.Vendor.HtCapabilities.Ldpc=0"
+						string5="$CURRENT_RADIO_PATH.Vendor.VhtCapabilities.Rxldpc=0"
+						string6="exit"
+						ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6" | ubus-cli`
 					else
 						if [ "$tc_name" = "4.11.1" ]; then
-							$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.ldpc=0	
-							$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.rxldpc=0
-							ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'enable_eht_debug_mode' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-							$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="enable_eht_debug_mode=1"
+							string1="$CURRENT_RADIO_PATH.Vendor.EnableEhtDebugMode=1"
+							string2="protected"
+							string3="$CURRENT_24G_RADIO_PATH.Vendor.HtCapabilities.Ldpc=0"
+							string4="$CURRENT_24G_RADIO_PATH.Vendor.VhtCapabilities.Rxldpc=0"
+							string5="exit"
+							ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
 						fi
-					fi			
-				fi			
+					fi
+				fi
 				# set for MU
 				for usr_index in 1 2 3 4
 				do
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$ap_usr_index" x18=0 
+					set_get_helper "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x18=0 
 				done
 			else
 				error_print "Unsupported value - ap_ldpc:$ap_ldpc ap_bcc:$ap_bcc"
@@ -3365,32 +3347,31 @@ ap_set_wireless()
 
 			# set for SU, only if not OFDMA MU TC
 			if [ "$glob_ofdma_phase_format" = "" ]; then #related to ap_ofdma
-				set_get_helper_non_debug $CURRENT_RADIO_UCI_PATH.sFixedRateCfg x1=0 x5=4 x7=${global_mcs_fixedrate} x8=5	
-			fi			
-				
+				set_get_helper_non_debug "FIXED_RATE_CFG_${CURRENT_IFACE_NAME}" x1=0 x5=4 x7=${global_mcs_fixedrate} x8=5
+			fi
+
 			# set for MU
 			for ap_usr_index in 1 2 3 4
 			do
 				# get MU DL NSS value from FAPI
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				sp_nss_mcs=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x1`
+				sp_nss_mcs=`get_index_from_db "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x1`
 				let ap_nss="$sp_nss_mcs/16+1"
 
 				# calculate the OFDMA MU NSS-MCS value (NSS: bits 5-4, MCS: bits 3-0)
 				let ap_ofdma_mu_nss_mcs_val="($ap_nss-1)*16+$global_mcs_fixedrate"
 
 				# set MU DL NSS MCS value
-				set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$ap_usr_index" x1=${ap_ofdma_mu_nss_mcs_val}
+				set_get_helper "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x1=${ap_ofdma_mu_nss_mcs_val}
 
 				# get MU UL NSS value
-				sp_nss_mcs=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x3`
+				sp_nss_mcs=`get_index_from_db "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x3`
 				let ap_nss="$sp_nss_mcs%16"
 
 				# calculate the OFDMA MU NSS-MCS value (NSS: bits 5-4, MCS: bits 3-0)
 				let ap_ofdma_mu_nss_mcs_val="($ap_nss-1)*16+$global_mcs_fixedrate"
 
 				# set MU UL NSS MCS value
-				set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$ap_usr_index" x3=${ap_ofdma_mu_nss_mcs_val}
+				set_get_helper "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x3=${ap_ofdma_mu_nss_mcs_val}
 			done
 		fi
 
@@ -3437,14 +3418,13 @@ ap_set_wireless()
 				nss_3=${ap_nss_cap}
 			else 
 				debug_print "$ap_mcs_max_cap is not supported"
-			fi	
+			fi
 
 			# set for MU
 			for ap_usr_index in 1 2 3 4
 			do
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 				if [ "$global_ap_mimo" != "ul" ]; then	
-					set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$ap_usr_index" x$dl_usr_psdu_rate_per_usp_idx=${ap_ofdma_mu_nss_mcs_val} x$dl_usr_ul_psdu_rate_per_usp_idx=${ap_ofdma_mu_nss_mcs_val}
+					set_get_helper "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_psdu_rate_per_usp_idx=${ap_ofdma_mu_nss_mcs_val} x$dl_usr_ul_psdu_rate_per_usp_idx=${ap_ofdma_mu_nss_mcs_val}
 				fi
 			done
 
@@ -3455,101 +3435,90 @@ ap_set_wireless()
 				send_error ",errorCode,137"
 				return
 			fi
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${ap_nss_mcs_val}"
-
-			## JIRA WLANRTSYS-11028: part0-Rx part1-Tx
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'vht_mcs_set_part0' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${ap_nss_mcs_val}"
 			global_nss_opt_ul=${ap_nss_cap}
-
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${ap_nss_mcs_val}"
-
-			# JIRA WLANRTSYS-11028: part0-Rx part1-Tx
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'vht_mcs_set_part1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${ap_nss_mcs_val}"
 			global_nss_opt_dl=${ap_nss_cap}
 
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_rx_he_mcs_map_160_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_160_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_160_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_160_mhz=${ap_nss_mcs_val}"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_tx_he_mcs_map_160_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_160_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_160_mhz=${ap_nss_mcs_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_160_mhz=${ap_nss_mcs_val}"
+			string1="$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${ap_nss_mcs_val}"
+			string2="$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${ap_nss_mcs_val}"
+			string3="$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=${ap_nss_mcs_val}"
+			string4="$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=${ap_nss_mcs_val}"
+			string5="$CURRENT_24G_RADIO_PATH.Vendor.VhtMcsSetPart0=${ap_nss_mcs_val}"
+			string6="$CURRENT_24G_RADIO_PATH.Vendor.VhtMcsSetPart1=${ap_nss_mcs_val}"
+			string7="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
+
+			string4="$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=${ap_nss_mcs_val}"
+			string1="$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${ap_nss_mcs_val}"
+			string2="$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${ap_nss_mcs_val}"
+			string3="$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=${ap_nss_mcs_val}"
+			string5="$CURRENT_5G_RADIO_PATH.Vendor.VhtMcsSetPart0=${ap_nss_mcs_val}"
+			string6="$CURRENT_5G_RADIO_PATH.Vendor.VhtMcsSetPart1=${ap_nss_mcs_val}"
+			string7="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
+
+			string3="$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=${ap_nss_mcs_val}"
+			string2="$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${ap_nss_mcs_val}"
+			string1="$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${ap_nss_mcs_val}"
+			string4="$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=${ap_nss_mcs_val}"
+			string5="$CURRENT_6G_RADIO_PATH.Vendor.VhtMcsSetPart0=${ap_nss_mcs_val}"
+			string6="$CURRENT_6G_RADIO_PATH.Vendor.VhtMcsSetPart1=${ap_nss_mcs_val}"
+			string7="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
+
 			if [ "$ap_program" = "EHT" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9=${nss_1}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9=${nss_1}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9=${nss_1}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9=${nss_1}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9=${nss_1}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9=${nss_1}"
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=${nss_1}"
+				string2="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=${nss_1}"
+				string3="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1011=${nss_2}"
+				string4="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1011=${nss_2}"
+				string5="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1213=${nss_3}"
+				string6="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1213=${nss_3}"
+				string7="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_0_9=${nss_1}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_0_9=${nss_1}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_0_9=${nss_1}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_0_9=${nss_1}"
+				string1="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=${nss_1}"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=${nss_1}"
+				string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1011=${nss_2}"
+				string4="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1011=${nss_2}"
+				string5="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1213=${nss_3}"
+				string6="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1213=${nss_3}"
+				string7="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_320_mhz_rx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_320_mhz_rx_max_nss_eht_mcs_0_9=${nss_1}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_320_mhz_tx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_320_mhz_tx_max_nss_eht_mcs_0_9=${nss_1}"
+				string1="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=${nss_1}"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs09=${nss_1}"
+				string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1011=${nss_2}"
+				string4="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1011=${nss_2}"
+				string5="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1213=${nss_3}"
+				string6="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1213=${nss_3}"
+				string7="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_10_11' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_10_11=${nss_2}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_10_11=${nss_2}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_10_11=${nss_2}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_10_11' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_10_11=${nss_2}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_10_11=${nss_2}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_10_11=${nss_2}"
+				string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=${nss_1}"
+				string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=${nss_1}"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1011=${nss_2}"
+				string4="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1011=${nss_2}"
+				string5="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1213=${nss_3}"
+				string6="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1213=${nss_3}"
+				string7="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_10_11' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_10_11=${nss_2}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_10_11=${nss_2}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_10_11' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_10_11=${nss_2}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_10_11=${nss_2}"
+				string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=${nss_1}"
+				string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs09=${nss_1}"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1011=${nss_2}"
+				string4="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1011=${nss_2}"
+				string5="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1213=${nss_3}"
+				string6="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1213=${nss_3}"
+				string7="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_320_mhz_rx_max_nss_eht_mcs_10_11' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_320_mhz_rx_max_nss_eht_mcs_10_11=${nss_2}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_320_mhz_tx_max_nss_eht_mcs_10_11' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_320_mhz_tx_max_nss_eht_mcs_10_11=${nss_2}"
-				
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_12_13' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_12_13=${nss_3}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_12_13=${nss_3}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_12_13=${nss_3}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_12_13' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_12_13=${nss_3}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_12_13=${nss_3}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_12_13=${nss_3}"
-
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_12_13' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_12_13=${nss_3}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_12_13=${nss_3}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_12_13' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_12_13=${nss_3}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_12_13=${nss_3}"
-
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_320_mhz_rx_max_nss_eht_mcs_12_13' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_320_mhz_rx_max_nss_eht_mcs_12_13=${nss_3}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_320_mhz_tx_max_nss_eht_mcs_12_13' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_320_mhz_tx_max_nss_eht_mcs_12_13=${nss_3}"
+				string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzRxMcs09=${nss_1}"
+				string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzTxMcs09=${nss_1}"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzTxMcs1011=${nss_2}"
+				string4="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzRxMcs1011=${nss_2}"
+				string5="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzRxMcs1213=${nss_3}"
+				string6="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzTxMcs1213=${nss_3}"
+				string7="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 			fi
 		fi
 
@@ -3557,8 +3526,7 @@ ap_set_wireless()
 			debug_print "ap_spatial_rx_stream:$ap_spatial_rx_stream"
 			debug_print "ap_program:$ap_program"
 
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x6`
+			mu_type=`get_index_from_db "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x6`
 
 			if [ "$global_ap_mimo" != "" ] || [ "$mu_type" = "1" ]; then
 				[ "$ap_spatial_rx_stream" = "2SS" ] && ap_spatial_rx_stream="1SS"
@@ -3589,33 +3557,44 @@ ap_set_wireless()
 				ap_local_mcs=$mcs_def_val_ul
 			fi
 
-			ap_spatial_rx_stream_val=`get_nss_mcs_val $spatial_rx_stream_number $ap_local_mcs`
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${ap_spatial_rx_stream_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${ap_spatial_rx_stream_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${ap_spatial_rx_stream_val}"
-			# JIRA WLANRTSYS-11028: part0-Rx part1-Tx
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'vht_mcs_set_part0' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${ap_spatial_rx_stream_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${ap_spatial_rx_stream_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${ap_spatial_rx_stream_val}"
 			global_nss_opt_ul=${spatial_rx_stream_number}
+			ap_spatial_rx_stream_val=`get_nss_mcs_val $spatial_rx_stream_number $ap_local_mcs`
+			string1="$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${ap_spatial_rx_stream_val}"
+			string2="$CURRENT_24G_RADIO_PATH.Vendor.VhtMcsSetPart0=${ap_spatial_rx_stream_val}"
+			string3="exit"
+			ret=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+			[ "$ap_program" = "EHT" ] && [ "$ucc_type" = "testbed" ] && ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=${spatial_rx_stream_number}"`
+
+			string1="$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${ap_spatial_rx_stream_val}"
+			string2="$CURRENT_5G_RADIO_PATH.Vendor.VhtMcsSetPart0=${ap_spatial_rx_stream_val}"
 			if [ "$ap_program" = "EHT" ] && [ "$ucc_type" = "testbed" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9=${spatial_rx_stream_number}"
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9=${spatial_rx_stream_number}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_rx_max_nss_eht_mcs_0_9=${spatial_rx_stream_number}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_rx_max_nss_eht_mcs_0_9=${spatial_rx_stream_number}"
-			fi	
+				string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=${spatial_rx_stream_number}"
+				string4="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=${spatial_rx_stream_number}"
+				string5="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
+			else
+				string3="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+			fi
+
+			string1="$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${ap_spatial_rx_stream_val}"
+			string2="$CURRENT_6G_RADIO_PATH.Vendor.VhtMcsSetPart0=${ap_spatial_rx_stream_val}"
+			if [ "$ap_program" = "EHT" ] && [ "$ucc_type" = "testbed" ]; then
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=${spatial_rx_stream_number}"
+				string4="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=${spatial_rx_stream_number}"
+				string5="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
+			else
+				string3="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+			fi
 		fi
 
 		if [ "$ap_spatial_tx_stream" != "" ]; then
 			debug_print "ap_spatial_tx_stream:$ap_spatial_tx_stream"
 			debug_print "ap_program:$ap_program"
 
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x6`
+			mu_type=`get_index_from_db "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x6`
 
 			if [ "$global_ap_mimo" != "" ] || [ "$mu_type" = "1" ]; then
 				[ "$ap_spatial_tx_stream" = "2SS" ] && ap_spatial_tx_stream="1SS"
@@ -3647,40 +3626,47 @@ ap_set_wireless()
 			fi
 
 			ap_spatial_tx_stream_val=`get_nss_mcs_val $spatial_tx_stream_number $ap_local_mcs`
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${ap_spatial_tx_stream_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${ap_spatial_tx_stream_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${ap_spatial_tx_stream_val}"
-			# JIRA WLANRTSYS-11028: part0-Rx part1-Tx
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'vht_mcs_set_part1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${ap_spatial_tx_stream_val}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${ap_spatial_tx_stream_val}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${ap_spatial_tx_stream_val}"
+			string1="$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${ap_spatial_tx_stream_val}"
+			string2="$CURRENT_24G_RADIO_PATH.Vendor.VhtMcsSetPart1=${ap_spatial_tx_stream_val}"
+			string3="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+
+			string1="$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${ap_spatial_tx_stream_val}"
+			string2="$CURRENT_5G_RADIO_PATH.Vendor.VhtMcsSetPart1=${ap_spatial_tx_stream_val}"
+			string3="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+
+			string1="$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${ap_spatial_tx_stream_val}"
+			string2="$CURRENT_6G_RADIO_PATH.Vendor.VhtMcsSetPart1=${ap_spatial_tx_stream_val}"
+			string3="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+
 			global_nss_opt_dl=${spatial_tx_stream_number}
 
 			# set for MU
 			for usr_index in 1 2 3 4
 			do
 				# get MU DL MCS value
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${usr_index} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				current_ap_mcs=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x1`
+				current_ap_mcs=`get_index_from_db "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x1`
 				let current_ap_mcs="$current_ap_mcs%16"
 
 				# calculate the OFDMA MU NSS-MCS value (NSS: bits 5-4, MCS: bits 3-0)
 				let ap_ofdma_mu_nss_mcs_val="($spatial_tx_stream_number-1)*16+$current_ap_mcs"
 
 				# set MU DL NSS MCS value
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x1=${ap_ofdma_mu_nss_mcs_val}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x1=${ap_ofdma_mu_nss_mcs_val}
 				# TBD: do we need to set the UL value here?
-				#Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x3=${ap_ofdma_mu_nss_mcs_val}
+				#Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x3=${ap_ofdma_mu_nss_mcs_val}
 			done
 			if [ "$ap_program" = "EHT" ] && [ "$ucc_type" = "testbed" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9=${spatial_tx_stream_number}"
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9=${spatial_tx_stream_number}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_less_than_or_equal_80_mhz_tx_max_nss_eht_mcs_0_9=${spatial_tx_stream_number}"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_0_9' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mcs_map_160_mhz_tx_max_nss_eht_mcs_0_9=${spatial_tx_stream_number}"
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=${spatial_tx_stream_number}"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=${spatial_tx_stream_number}"
+				string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs09=${spatial_tx_stream_number}"
+				string4="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=${spatial_tx_stream_number}"
+				string5="$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs09=${spatial_tx_stream_number}"
+				string6="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6" | ubus-cli`
 			fi
 		fi
 
@@ -3696,28 +3682,45 @@ ap_set_wireless()
 				send_error ",errorCode,165"
 				return
 			fi
-			
+
 			if [ "$ap_program" = "EHT" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mac_max_ampdu_len_exp_ext' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				#uci_set_eht "radio" "set" $ap_get_debug_hostap_conf_or_Post_Up_idx "eht_mac_max_ampdu_len_exp_ext=$ap_ampdu_exp_val"
-                $UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_max_ampdu_len_exp_ext=$ap_ampdu_exp_val"
-                $UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_max_ampdu_len_exp_ext=$ap_ampdu_exp_val"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_max_ampdu_len_exp_ext=$ap_ampdu_exp_val"
-				# JIRA WLANRTSYS-9583 [Silicon limitation A1] ap_set_wireless AMPDU,Disable -> Disable BA Agreements in FW using sAggrConfig
-                #uci_set_eht "iface" "set_get_helper_non_debug" "sAggrConfig" "x1=$ap_ampdu_val"
-				set_get_helper_non_debug $CURRENT_24G_IFACE_UCI_PATH.sAggrConfig x1=$ap_ampdu_val
-				set_get_helper_non_debug $CURRENT_5G_IFACE_UCI_PATH.sAggrConfig x1=$ap_ampdu_val
-				set_get_helper_non_debug $CURRENT_6G_IFACE_UCI_PATH.sAggrConfig x1=$ap_ampdu_val
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMaxAmpduLenExpExt=$ap_ampdu_exp_val"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMaxAmpduLenExpExt=$ap_ampdu_exp_val"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMaxAmpduLenExpExt=$ap_ampdu_exp_val"
+				ap_aggr_config=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=$ap_ampdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string4="$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				ap_aggr_config=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=$ap_ampdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string5="$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				ap_aggr_config=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=$ap_ampdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string6="$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				string7="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6\n$string7" | ubus-cli`
 			else
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mac_a_msdu_in_ack_enabled_a_mpdu_support' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mac_a_msdu_in_ack_enabled_a_mpdu_support=$ap_ampdu_val"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mac_maximum_a_mpdu_length_exponent' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mac_maximum_a_mpdu_length_exponent=$ap_ampdu_exp_val"
-				# JIRA WLANRTSYS-9583 [Silicon limitation A1] ap_set_wireless AMPDU,Disable -> Disable BA Agreements in FW using sAggrConfig  
-				set_get_helper_non_debug $CURRENT_IFACE_UCI_PATH.sAggrConfig x1=$ap_ampdu_val 	
-			fi 
+				string1="$CURRENT_RADIO_PATH.Vendor.HeMacMsduAckEnabledMpduSupport=$ap_ampdu_val"
+				string2="$CURRENT_RADIO_PATH.Vendor.HeMacMaxAMpduLengthExponent=$ap_ampdu_exp_val"
+				# JIRA WLANRTSYS-9583 [Silicon limitation A1] ap_set_wireless AMPDU,Disable -> Disable BA Agreements in FW using sAggrConfig
+				ap_aggr_config=`ubus-cli $CURRENT_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=$ap_ampdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string3="$CURRENT_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+			fi
+			sleep 4
 		fi
-				
+
 		if [ "$ap_amsdu" != "" ]; then
 			if [ "$ap_amsdu" = "enable" ]; then
 				ap_amsdu_val="1"
@@ -3731,24 +3734,45 @@ ap_set_wireless()
 
 			tc_name=`get_test_case_name $glob_ssid`
 			if [ "$ap_program" = "EHT" ]; then
-				set_get_helper_non_debug $CURRENT_6G_IFACE_UCI_PATH.sAggrConfig x0=$ap_amsdu_val
-				set_get_helper_non_debug $CURRENT_5G_IFACE_UCI_PATH.sAggrConfig x0=$ap_amsdu_val
-				set_get_helper_non_debug $CURRENT_24G_IFACE_UCI_PATH.sAggrConfig x0=$ap_amsdu_val
+				ap_aggr_config=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x0=$ap_amsdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string1="$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				ap_aggr_config=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x0=$ap_amsdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string2="$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				ap_aggr_config=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x0=$ap_amsdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string3="$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			else
-                set_get_helper $CURRENT_IFACE_UCI_PATH.sAggrConfig x0=$ap_amsdu_val
-            fi
+				ap_aggr_config=`ubus-cli $CURRENT_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper "ap_aggr_config" x0=$ap_amsdu_val`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"`
+			fi
+			sleep 4
 
 			if [ "$ap_amsdu_val" = "1" ]; then
 				if [ "$ap_program" = "EHT" ]; then
-					#uci_set_eht "radio" "set" $ap_get_debug_hostap_conf_or_Post_Up_idx "sMaxMpduLen=11000"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMaxMpduLen' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMaxMpduLen=11000"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMaxMpduLen=11000"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMaxMpduLen=11000"
+					string1="$CURRENT_24G_RADIO_PATH.Vendor.SetMaxMpduLen=11000"
+					string2="$CURRENT_5G_RADIO_PATH.Vendor.SetMaxMpduLen=11000"
+					string3="$CURRENT_6G_RADIO_PATH.Vendor.SetMaxMpduLen=11000"
+					string4="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 				else ## WLANRTSYS-11027 [Silicon limitation A1] upon AMSDU enable Set sMaxMpduLen to 11000
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMaxMpduLen' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMaxMpduLen=11000"
+					ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.SetMaxMpduLen=11000"`
 				fi
+				sleep 5
 			fi
 		fi
 
@@ -3765,13 +3789,32 @@ ap_set_wireless()
 				return
 			fi
 			if [ "$ap_program" = "EHT" ] || [ "$ap_program" = "HE" ]; then
-				#uci_set_eht "iface" "set_get_helper_non_debug" "sAggrConfig" "x2=${ap_addba_reject_val}"
-				set_get_helper_non_debug $CURRENT_24G_IFACE_UCI_PATH.sAggrConfig x1=${ap_addba_reject_val}
-				set_get_helper_non_debug $CURRENT_5G_IFACE_UCI_PATH.sAggrConfig x1=${ap_addba_reject_val}
-				set_get_helper_non_debug $CURRENT_6G_IFACE_UCI_PATH.sAggrConfig x1=${ap_addba_reject_val}
+				ap_aggr_config=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=${ap_addba_reject_val}`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string1="$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				ap_aggr_config=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=${ap_addba_reject_val}`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string2="$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				ap_aggr_config=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=${ap_addba_reject_val}`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				string3="$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			else
-				set_get_helper_non_debug $CURRENT_IFACE_UCI_PATH.sAggrConfig x2=${ap_addba_reject_val}
+				ap_aggr_config=`ubus-cli $CURRENT_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x1=${ap_addba_reject_val}`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"`
 			fi
+			sleep 4
 		fi
 
 		if [ "$ap_addbareq_bufsize" != "" ]; then
@@ -3786,12 +3829,36 @@ ap_set_wireless()
 			fi
 			
 			if [ "$ap_program" = "EHT" ]; then
-				[ "$ap_addbareq_bufsize" != "0" ] && set_get_helper_non_debug $CURRENT_6G_IFACE_UCI_PATH.sAggrConfig x2=${ap_addbareq_bufsize}
-				[ "$ap_addbareq_bufsize" != "0" ] && set_get_helper_non_debug $CURRENT_5G_IFACE_UCI_PATH.sAggrConfig x2=${ap_addbareq_bufsize}
-				[ "$ap_addbareq_bufsize" != "0" ] && set_get_helper_non_debug $CURRENT_24G_IFACE_UCI_PATH.sAggrConfig x2=${ap_addbareq_bufsize}
+				if [ "$ap_addbareq_bufsize" != "0" ]; then
+					ap_aggr_config=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.SetAggrConfig?`
+					ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+					ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x2=${ap_addbareq_bufsize}`
+					ap_aggr_config="\"${ap_aggr_config}\""
+					string1="$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+					ap_aggr_config=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.SetAggrConfig?`
+					ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+					ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x2=${ap_addbareq_bufsize}`
+					ap_aggr_config="\"${ap_aggr_config}\""
+					string2="$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+					ap_aggr_config=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.SetAggrConfig?`
+					ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+					ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x2=${ap_addbareq_bufsize}`
+					ap_aggr_config="\"${ap_aggr_config}\""
+					string3="$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"
+					string4="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				fi
 			else
-				[ "$ap_addbareq_bufsize" != "0" ] && set_get_helper_non_debug $CURRENT_IFACE_UCI_PATH.sAggrConfig x2=${ap_addbareq_bufsize}
-			fi	
+				if [ "$ap_addbareq_bufsize" != "0" ]; then
+					ap_aggr_config=`ubus-cli $CURRENT_AP_PATH.Vendor.SetAggrConfig?`
+					ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+					ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x2=${ap_addbareq_bufsize}`
+					ap_aggr_config="\"${ap_aggr_config}\""
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"`
+				fi
+			fi
+			sleep 4
 		fi
 
 		## JIRA WLANRTSYS-10849
@@ -3806,7 +3873,14 @@ ap_set_wireless()
 				return
 			fi
 
-			[ "$ap_addbaresp_bufsize" != "0" ] && set_get_helper_non_debug $CURRENT_IFACE_UCI_PATH.sAggrConfig x2=${ap_addbaresp_bufsize} 
+			if [ "$ap_addbareq_bufsize" != "0" ]; then
+				ap_aggr_config=`ubus-cli $CURRENT_AP_PATH.Vendor.SetAggrConfig?`
+				ap_aggr_config=`echo $ap_aggr_config | cut -d"=" -f2 | tr -d '"'`
+				ap_aggr_config=`set_get_helper_non_debug "ap_aggr_config" x2=${ap_addbaresp_bufsize}`
+				ap_aggr_config="\"${ap_aggr_config}\""
+				ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SetAggrConfig=${ap_aggr_config}"`
+				sleep 4
+			fi
 		fi
 
 		if [ "$ap_tx_bf" != "" ]; then
@@ -3818,30 +3892,40 @@ ap_set_wireless()
 				debug_print "tc_name=$tc_name"
 				debug_print "width_val=$width_val"
 				if [ "$ap_program" != "EHT" ]; then
+					#TODO-Imp
 					if [ "$tc_name" = "4.35.1" ] && [ "$width_val" = "80MHz" ]; then
 						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_hostap_conf="he_phy_channel_width_set=2"
 					fi
 					# WLANRTSYS-10947
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_hostap_conf="he_phy_su_beamformer_capable=1"
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_hostap_conf="he_phy_mu_beamformer_capable=1"
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_hostap_conf="he_phy_su_beamformee_capable=1"
-					# set the maximum but will not be set more the hw antennas.
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_max_nc' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_max_nc=4"
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.debug_hostap_conf="he_phy_triggered_su_beamforming_feedback=1"
+					string1="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformerCapable=1"
+					string2="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=1"
+					string3="$CURRENT_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=1"
+					string4="$CURRENT_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=1"
+					string5="$CURRENT_RADIO_PATH.Vendor.HePhyMacNc=3"
+					string6="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6" | ubus-cli`
 				else #Specific for EHT program
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_su_beamformer' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformer=1"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformer=1"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformer=1"	
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_su_beamformee' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformee=1"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformee=1"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformee=1"	
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_max_nc' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_max_nc=3"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_max_nc=3"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_max_nc=3"
+					string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformer=1"
+					string2="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformee=1"
+					string3="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMaxNc=3"
+					string4="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+
+					string1="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformer=1"
+					string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformee=1"
+					string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMaxNc=3"
+					string4="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+
+					string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformer=1"
+					string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformee=1"
+					string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMaxNc=3"
+					string4="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 				fi
 			elif [ "$ap_tx_bf" = "disable" ]; then
 				ap_tx_bf_val="Disabled"
@@ -3850,34 +3934,37 @@ ap_set_wireless()
 				send_error ",errorCode,180"
 				return
 			fi
-
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sBfMode' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			sBfMode_local=`convert_bf_mode $ap_tx_bf_val`
 			debug_print "converted sBfMode_local=$sBfMode_local"
 			if [ "$ap_program" = "EHT" ]; then
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sBfMode $sBfMode_local"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sBfMode $sBfMode_local"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sBfMode $sBfMode_local"	
-			else	
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx=\"sBfMode $sBfMode_local\"	
-			fi	
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.SetBfMode=$sBfMode_local"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.SetBfMode=$sBfMode_local"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.SetBfMode=$sBfMode_local"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+			else
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.Vednor.SetBfMode=$sBfMode_local"`
+			fi
 		fi
 
 		if [ "$ap_num_sound_dim" != "" ]; then
 			debug_print "ap_num_sound_dim:$ap_num_sound_dim"
 			if [ "$ap_program" = "EHT" ] && [ "$ap_num_sound_dim" -le 4 ] ; then
 				debug_print "Setting number of sounding dimention to $ap_num_sound_dim"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_num_sounding_dim_80_mhz_or_below' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_num_sounding_dim_80_mhz_or_below=$((ap_num_sound_dim - 1 ))"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_num_sounding_dim_80_mhz_or_below=$((ap_num_sound_dim -1 ))"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_num_sounding_dim_80_mhz_or_below=$((ap_num_sound_dim - 1 ))"
+				string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNumSoundDim80MhzOrBelow=$((ap_num_sound_dim - 1 ))"
+				string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNumSoundDim80MhzOrBelow=$((ap_num_sound_dim - 1 ))"
+				string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim160Mhz=$((ap_num_sound_dim - 1 ))"
+				string4="exit"
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_num_sounding_dim_160_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_num_sounding_dim_160_mhz=$((ap_num_sound_dim -1 ))"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_num_sounding_dim_160_mhz=$((ap_num_sound_dim -1 ))"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_num_sounding_dim_320_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_num_sounding_dim_320_mhz=$((ap_num_sound_dim -1 ))"
+				string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNumSoundDim80MhzOrBelow=$((ap_num_sound_dim -1 ))"
+				string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim160Mhz=$((ap_num_sound_dim -1 ))"
+				string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim320Mhz=$((ap_num_sound_dim -1 ))"
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 			elif [ "ap_num_sound_dim" -gt 4 ]; then
 				error_print "Unsupported value - ap_num_sound_dim:$ap_num_sound_dim"
 				send_error ",errorCode,185"
@@ -3896,8 +3983,7 @@ ap_set_wireless()
 				send_error ",errorCode,195"
 				return
 			fi
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mac_om_control_support' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mac_om_control_support=${ap_omcontrol}"
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMacOmControlSupport=${ap_omcontrol}"`
 		fi
 
 		if [ "$ap_eht_omcontrol" != "" ]; then
@@ -3911,26 +3997,26 @@ ap_set_wireless()
 				send_error ",errorCode,197"
 				return
 			fi
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mac_eht_om_control' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_eht_om_control=${ap_eht_omcontrol}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_eht_om_control=${ap_eht_omcontrol}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_eht_om_control=${ap_eht_omcontrol}"		
+			string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtMacEhtOmControl=${ap_eht_omcontrol}"
+			string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtMacEhtOmControl=${ap_eht_omcontrol}"
+			string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtMacEhtOmControl=${ap_eht_omcontrol}"
+			string4="exit"
+
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 		fi
 
-		if [ "$ap_ul_mumimo" != "" ]; then
-			if [ "$ap_ul_mumimo" = 1 ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_non_ofdma_ul_mu_mimo_bw_80_mhz_or_below' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_non_ofdma_ul_mu_mimo_bw_80_mhz_or_below=${ap_ul_mumimo}"
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_non_ofdma_ul_mu_mimo_bw_80_mhz_or_below=${ap_ul_mumimo}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_non_ofdma_ul_mu_mimo_bw_80_mhz_or_below=${ap_ul_mumimo}"
+		if [ "$ap_ul_mumimo" != "" -a "$ap_ul_mumimo" = 1 ]; then
+			string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNonOfdmaMuMimo80MhzBelow=${ap_ul_mumimo}"
+			string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNonOfdmaMuMimo80MhzBelow=${ap_ul_mumimo}"
+			string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw160Mhz=${ap_ul_mumimo}"
+			string4="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_non_ofdma_ul_mu_mimo_bw_160_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_non_ofdma_ul_mu_mimo_bw_160_mhz=${ap_ul_mumimo}"
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_non_ofdma_ul_mu_mimo_bw_160_mhz=${ap_ul_mumimo}"
-
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_non_ofdma_ul_mu_mimo_bw_320_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_non_ofdma_ul_mu_mimo_bw_320_mhz=${ap_ul_mumimo}"
-			fi
+			string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNonOfdmaMuMimo80MhzBelow=${ap_ul_mumimo}"
+			string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw160Mhz=${ap_ul_mumimo}"
+			string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw320Mhz=${ap_ul_mumimo}"
+			string4="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 		fi
 
 		# MU-MIMO
@@ -3940,57 +4026,51 @@ ap_set_wireless()
 				if [ "$ap_program" != "EHT" ]; then
 					get_nof_sta_per_he_test_case $glob_ssid
 					ap_num_users_ofdma=$nof_sta
-					arguments_file_initializer $CURRENT_RADIO_UCI_PATH $glob_ssid
-					/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.0 $ap_num_users_ofdma &
+					arguments_file_initializer $CURRENT_RADIO_PATH $glob_ssid $CURRENT_IFACE_NAME
+					/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.1 $ap_num_users_ofdma &
 
 					if [ "$global_ap_mimo" = "dl" ]; then
 						glob_ofdma_phase_format=0
 						## Common PART
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=1 x6=1 x15=406
+						set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=1 x6=1 x15=406
 						# WLANRTSYS-9638: 'WaveSPDlUsrPsduRatePerUsp' will NOT be set at all
 					elif [ "$global_ap_mimo" = "ul" ]; then
 						glob_ofdma_phase_format=1
 						## Common PART
 						## Phase repetitions to be set as we do for UL OFDMA in order to efficiently utilize the TXOP
 						## Default CP=1 (1.6us), LTF=0 (1x), GI=0 (1xLTF + 1.6 GI)
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x6=1 x7=1 x12=1 x13=0 x14=0
+						set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=5 x6=1 x7=1 x12=1 x13=0 x14=0
 					fi
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-					set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
+					set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x4=${glob_ofdma_phase_format}
 					## ap_num_users_ofdma in case UCC will send num of users if not user will be set according to the test
 					if [ "$ap_num_users_ofdma" != "" ]; then
-						set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
+						set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x5=${ap_num_users_ofdma}
 					else
 						if [ "$glob_ssid" != "" ]; then
 							# check if num_of_users can be obtained from the predefined list (by test plan)
 							get_nof_sta_per_he_test_case $glob_ssid
 							ap_num_users_ofdma=$nof_sta
-							[ "$ap_num_users_ofdma" != "0" ] && set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
+							[ "$ap_num_users_ofdma" != "0" ] && set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x5=${ap_num_users_ofdma}
 						fi
 					fi
 				else #Specific for EHT
 					if [ "$global_ap_mimo" = "dl" ]; then
 						glob_ofdma_phase_format=0
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=1 x6=1 x15=406
-						set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=1 x6=1 x15=406
-						set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=1 x6=1 x15=406
+						set_get_helper "PLAN_COMMON_${CURRENT_24G_IFACE_NAME}" x2=1 x6=1 x15=406
+						set_get_helper "PLAN_COMMON_${CURRENT_5G_IFACE_NAME}" x2=1 x6=1 x15=406
+						set_get_helper "PLAN_COMMON_${CURRENT_6G_IFACE_NAME}" x2=1 x6=1 x15=406
 					elif [ "$global_ap_mimo" = "ul" ]; then
 						glob_ofdma_phase_format=1
 						## Default CP=1 (1.6us), LTF=1 (2x), GI_LTF=1 (2xLTF + 1.6 GI), UL_LEN=3082->TPE=16us
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x6=1 x7=1 x12=1 x13=1 x14=1 x15=3082
-						set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x6=1 x7=1 x12=1 x13=1 x14=1 x15=3082
-						set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x6=1 x7=1 x12=1 x13=1 x14=1 x15=3082
+						set_get_helper "PLAN_COMMON_${CURRENT_24G_IFACE_NAME}" x2=5 x6=1 x7=1 x12=1 x13=1 x14=1 x15=3082
+						set_get_helper "PLAN_COMMON_${CURRENT_5G_IFACE_NAME}" x2=5 x6=1 x7=1 x12=1 x13=1 x14=1 x15=3082
+						set_get_helper "PLAN_COMMON_${CURRENT_6G_IFACE_NAME}" x2=5 x6=1 x7=1 x12=1 x13=1 x14=1 x15=3082
 					fi
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-					set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
-					set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
-					set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x4=${glob_ofdma_phase_format}
+					set_get_helper "PLAN_COMMON_${CURRENT_24G_IFACE_NAME}" x4=${glob_ofdma_phase_format}
+					set_get_helper "PLAN_COMMON_${CURRENT_5G_IFACE_NAME}" x4=${glob_ofdma_phase_format}
+					set_get_helper "PLAN_COMMON_${CURRENT_6G_IFACE_NAME}" x4=${glob_ofdma_phase_format}
 					[ "$ap_num_users_ofdma" = "" ] && ap_num_users_ofdma=2
-					set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x5=${ap_num_users_ofdma}
+					set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x5=${ap_num_users_ofdma}
 				fi
 			else
 				error_print "Unsupported value - global_ap_mimo:$global_ap_mimo"
@@ -3999,96 +4079,95 @@ ap_set_wireless()
 			fi
 			# set fixed rate for MU-MIMO
 			info_print "sDoSimpleCLI 70 1"
-			uci set $CURRENT_RADIO_UCI_PATH.debug_iw_post_up_2="sDoSimpleCLI 70 1"
+			iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 70 1
 		fi
 
 		if [ "$global_mu_txbf" != "" ] || [ "$ap_mu_beamformer" != "" ]; then
 			if [ "$global_mu_txbf" = "enable" ] || [ "$ap_mu_beamformer" = "1" ]; then
 				if [ "$ap_program" != "EHT" ]; then
 					# WLANRTSYS-10947
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_su_beamformer_capable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_su_beamformer_capable=1"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_mu_beamformer_capable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_mu_beamformer_capable=1"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_su_beamformee_capable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_su_beamformee_capable=1"
-					# set the maximum but will not be set more the hw antennas.
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_max_nc' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_max_nc=4"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_phy_triggered_su_beamforming_feedback' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_phy_triggered_su_beamforming_feedback=1"
+					string1="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformerCapable=1"
+					string2="$CURRENT_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=1"
+					string3="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=1"
+					string4="$CURRENT_RADIO_PATH.Vendor.HePhyMacNc=4"
+					string5="$CURRENT_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=1"
+					string6="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6" | ubus-cli`
 					if [ "$ucc_type" = "testbed" ]; then
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`uci show wireless | grep $CURRENT_RADIO_UCI_PATH | grep 'he_mac_ndp_feedback_report_support' | cut -d"." -f3 | cut -d"=" -f1`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mac_ndp_feedback_report_support=1"
+						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMacNdpFeedbackReportSupport=1"`
 					fi
-			
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-					set_get_helper  $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=1
+					set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_mu_type_idx=1
 					if [ "$ucc_type" = "testbed" ]; then
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'enable_he_debug_mode' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="enable_he_debug_mode=0"
+						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.EnableHeDebugMode=0"`
 					fi
 			
 					get_nof_sta_per_he_test_case $glob_ssid
 					ap_num_users_ofdma=$nof_sta
-					arguments_file_initializer $CURRENT_RADIO_UCI_PATH $glob_ssid
+					arguments_file_initializer $CURRENT_RADIO_PATH $glob_ssid $CURRENT_IFACE_NAME
 					kill_sigmaManagerDaemon
-					[ "$ap_program" = "HE" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.0 $ap_num_users_ofdma &
+					[ "$ap_program" = "HE" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.1 $ap_num_users_ofdma &
 				else #Specific for EHT
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_su_beamformer' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformer=1"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformer=1"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformer=1"	
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_su_beamformee' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformee=1"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformee=1"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_su_beamformee=1"	
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_max_nc' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_max_nc=3"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_max_nc=3"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_max_nc=3"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_mu_beamformer_bw_80_mhz_or_below' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_mu_beamformer_bw_80_mhz_or_below=1"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_mu_beamformer_bw_80_mhz_or_below=1"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_mu_beamformer_bw_80_mhz_or_below=1"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_mu_beamformer_bw_160_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_mu_beamformer_bw_160_mhz=1"
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_mu_beamformer_bw_160_mhz=1"
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_phy_mu_beamformer_bw_320_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_phy_mu_beamformer_bw_320_mhz=1"
+					string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformer=1"
+					string2="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformee=1"
+					string3="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMaxNc=3"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+
+					string1="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformer=1"
+					string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformee=1"
+					string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMaxNc=3"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+
+					string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformer=1"
+					string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformee=1"
+					string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMaxNc=3"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+
+					string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw80MhzBelow=1"
+					string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw80MhzBelow=1"
+					string3="$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw160Mhz=1"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+
+					string1="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw80MhzBelow=1"
+					string2="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw160Mhz=1"
+					string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw320Mhz=1"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 					if [ "$global_ap_mimo" = "" -a "$glob_ap_ofdma" = "" -a "$global_mu_txbf" = "enable" -a "$ap_tx_bf" = "enable" ] || [ "$global_ap_mimo" != "" ]; then
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=1
-						set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=1
-						set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=1
+						set_get_helper "PLAN_COMMON_${CURRENT_24G_IFACE_NAME}" x$dl_com_mu_type_idx=1
+						set_get_helper "PLAN_COMMON_${CURRENT_5G_IFACE_NAME}" x$dl_com_mu_type_idx=1
+						set_get_helper "PLAN_COMMON_${CURRENT_6G_IFACE_NAME}" x$dl_com_mu_type_idx=1
 					else
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-						set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=0
-						set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=0
-						set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_mu_type_idx=0
+						set_get_helper "PLAN_COMMON_${CURRENT_24G_IFACE_NAME}" x$dl_com_mu_type_idx=0
+						set_get_helper "PLAN_COMMON_${CURRENT_5G_IFACE_NAME}" x$dl_com_mu_type_idx=0
+						set_get_helper "PLAN_COMMON_${CURRENT_6G_IFACE_NAME}" x$dl_com_mu_type_idx=0
 					fi
 					#Set the mu_sequence_type=9 to set the HE_MU_SEQ_DL_BASIC_TF_WITH_SOUNDING for TC-4.19.1 & TC-5.21.1
 					if [ "$ap_non_trig_tx_bf" = "enable" ] || [ "$glob_ap_ofdma" != "" -a "$global_mu_txbf" = "enable" -a "$ap_tx_bf" = "enable" ]; then
-						set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$sequence_type_idx=9
-						set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$sequence_type_idx=9
-						set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$sequence_type_idx=9
+						set_get_helper "PLAN_COMMON_${CURRENT_24G_IFACE_NAME}" x$sequence_type_idx=9
+						set_get_helper "PLAN_COMMON_${CURRENT_5G_IFACE_NAME}" x$sequence_type_idx=9
+						set_get_helper "PLAN_COMMON_${CURRENT_6G_IFACE_NAME}" x$sequence_type_idx=9
 					fi
 				fi
-			fi	
-		fi	
+			fi
+		fi
 
 		if [ "$ap_mu_edca" != "" ]; then
 			## JIRA WLANRTSYS-10947: WaveHeMuEdcaIePresent
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mu_edca_ie_present' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			if [ "$ap_mu_edca" = "override" ]; then
 				if [ "$ap_program" = "EHT" ]; then
-					$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mu_edca_ie_present=1"
-					$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mu_edca_ie_present=1"
-					$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mu_edca_ie_present=1"
+					string1="$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"
+					string2="$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"
+					string3="$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
 				else
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mu_edca_ie_present=1"
+					ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
 				fi
-			fi		
+			fi
 		fi
 
 		if [ "$ap_twt_respsupport" != "" ]; then
@@ -4096,8 +4175,7 @@ ap_set_wireless()
 			if [ "$ap_twt_respsupport" = "enable" ]; then
 				ap_twt_respsupport="1"
 				info_print "dl_com_number_of_phase_repetitions = 2"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				set_get_helper  $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x$dl_com_number_of_phase_repetitions_idx=2
+				set_get_helper "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_number_of_phase_repetitions_idx=2
 			elif [ "$ap_twt_respsupport" = "disable" ]; then
 				ap_twt_respsupport="0"
 			else
@@ -4105,29 +4183,21 @@ ap_set_wireless()
 				send_error ",errorCode,200"
 				return
 			fi
-			
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep  -w 'twt_responder_support' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="twt_responder_support=${ap_twt_respsupport}"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mac_twt_responder_support' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mac_twt_responder_support=${ap_twt_respsupport}"
+
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.TwtResponderSupport=${ap_twt_respsupport}"`
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMacTwtResponderSupport=${ap_twt_respsupport}"`
 		fi
 
 		if [ "$global_ap_btwt" = "1" ]; then
 			debug_print "global_ap_btwt:$global_ap_btwt"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`uci show wireless | grep $CURRENT_RADIO_UCI_PATH | grep 'he_mac_broadcast_twt_support' | cut -d"." -f3 | cut -d"=" -f1`
-			if [ -z "$ap_get_debug_hostap_conf_or_Post_Up_idx" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`uci show wireless | grep debug_hostap | grep $CURRENT_RADIO_UCI_PATH | cut -d"_" -f4 | cut -d"=" -f1 | sort -n | tail -1`
-				ap_get_debug_hostap_conf_or_Post_Up_idx="debug_hostap_conf_$((ap_get_debug_hostap_conf_or_Post_Up_idx+1))"
-			fi
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mac_broadcast_twt_support=${global_ap_btwt}"
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMacBroadcastTwtSupport=${global_ap_btwt}"`
 		fi
 
 		if [ -n "$ap_min_mpdu_start_spacing" ]; then
 			debug_print "ap_min_mpdu_start_spacing:$ap_min_mpdu_start_spacing"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'ht_minimum_mpdu_start_spacing' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="ht_minimum_mpdu_start_spacing=${ap_min_mpdu_start_spacing}"
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HtMinMpduStartSpacing=${ap_min_mpdu_start_spacing}"`
 		fi
-		
+
 		# JIRA WLANRTSYS-9943
 		if [ "$ap_vht_extnss" != "" ]; then
 			if [ "$ap_vht_extnss" = "eq0" ]; then
@@ -4140,15 +4210,10 @@ ap_set_wireless()
 				return
 			fi
 		fi
+
 		# Handle MBSSID feature - start
 		if [ -n "$global_ap_mbssid" ] || [ -n "$global_ap_cohosted_bss" ]; then
 			debug_print "global_ap_mbssid:$global_ap_mbssid"
-			# In order to avoid issues with new VAPs MACs, setting MAC for first VAP in the format XX:XX:XX:XX:XX:X0
-			local macaddr_suffix=${CURRENT_WLAN_NAME##wlan}
-			macaddr_suffix=$((macaddr_suffix+1))
-			macaddr_suffix=$((macaddr_suffix*10))
-			base_addr=`uci show wireless | grep $CURRENT_RADIO_UCI_PATH.macaddr | cut -d"=" -f2 | cut -d":" -f1-5 | cut -d"'" -f2`
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.macaddr=$base_addr:${macaddr_suffix}
 			if [ "$global_ap_mbssid" = "enable" ] || [ "$global_ap_cohosted_bss" = "enable" ]; then
 				if [ -n "$global_num_non_tx_bss" ] && [ -z "$global_ap_cohosted_bss" ]; then
 					if [ $global_num_non_tx_bss -le 3 ]; then
@@ -4161,7 +4226,7 @@ ap_set_wireless()
 					debug_print "ap_non_tx_bss_index:$ap_non_tx_bss_index"
 					ap_non_tx_bss_index_count=$global_num_non_tx_bss
 					if [ "$global_ap_cohosted_bss" = "enable" ]; then
-						ap_non_tx_bss_index_count=$global_num_cohosted_bss
+						ap_non_tx_bss_index_count=$((global_num_cohosted_bss-1))
 						ap_non_tx_bss_index=$((ap_cohosted_bss_index-1))
 					fi
 					local count=0
@@ -4169,49 +4234,30 @@ ap_set_wireless()
 					while [ $count -lt $ap_non_tx_bss_index_count ]; do
 						count=$((count+1))
 						if [ $count -eq $ap_non_tx_bss_index ]; then
-							([ -n "$ap_ssid_non_tx_bss_index" ] || [ -n "$ap_ssid_cohosted_bss_index" ]) && eval mbss_vap_$count=`add_interface`
-							tmp_current_o_vap="mbss_vap_$count"
-							current_o_vap=`eval 'echo $'$tmp_current_o_vap`
-							[ -n "$global_ap_mbssid" ] && $UCI_CMD set wireless.$current_o_vap.ssid="$ap_ssid_non_tx_bss_index"
-							[ -n "$global_ap_cohosted_bss" ] && $UCI_CMD set wireless.$current_o_vap.ssid="$ap_ssid_cohosted_bss_index"
-							pmf=`uci get $CURRENT_IFACE_UCI_PATH.ieee80211w`
-							[ -n "$pmf" ] && $UCI_CMD set wireless.$current_o_vap.ieee80211w=$pmf
-							bpe=`uci get $CURRENT_IFACE_UCI_PATH.beacon_protection_enabled`
-							[ -n "$bpe" ] && $UCI_CMD set wireless.$current_o_vap.beacon_protection_enabled=$bpe
-							[ -n "$global_ap_cohosted_bss" ] && CURRENT_IFACE_UCI_PATH_2="wireless.$current_o_vap"
-							[ -n "$global_ap_mbssid" ] && CURRENT_6G_IFACE_UCI_PATH_2="wireless.$current_o_vap"
+							([ -n "$ap_ssid_non_tx_bss_index" ] || [ -n "$ap_ssid_cohosted_bss_index" ]) && add_interface
+							debug_print "Current SSID path: $CURRENT_SSID_PATH_2"
+							sleep 5
+							[ -n "$global_ap_mbssid" ] && ret=`eval ubus call $CURRENT_SSID_PATH_2 _set \'{\"parameters\"\: {\"SSID\"\: \"$ap_ssid_non_tx_bss_index\", \"Enable\": \"1\"}}\'`
+							[ -n "$global_ap_cohosted_bss" ] && ret=`eval ubus call $CURRENT_SSID_PATH_2 _set \'{\"parameters\"\: {\"SSID\"\: \"$ap_ssid_cohosted_bss_index\", \"Enable\"\: \"1\"}}\'`
+							sleep 2
 						else
-							eval mbss_vap_$count=`add_interface`
-							tmp_current_o_vap="mbss_vap_$count"
-							current_o_vap=`eval 'echo $'$tmp_current_o_vap`
-							$UCI_CMD set wireless.$current_o_vap.ssid="MBSSID_VAP_${count}"
-							$UCI_CMD set wireless.$current_o_vap.mbo="0"
-							pmf=`uci get $CURRENT_IFACE_UCI_PATH.ieee80211w`
-							[ -n "$pmf" ] && $UCI_CMD set wireless.$current_o_vap.ieee80211w=$pmf
+							add_interface
+							eval `ubus call $CURRENT_SSID_PATH_2 _set '{"parameters": {"SSID": "MBSSID_VAP_${count}", "Enable": "1"}}'`
+							sleep 2
+							ret=`ubus-cli "$CURRENT_AP_PATH_2.MBOEnable=0"`
 						fi
 					done
 					if [ -n "$global_ap_mbssid" ] && [ "$global_ap_mbssid" = "enable" ]; then
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'multibss_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="multibss_enable=1"
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_operation_cohosted_bss' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_operation_cohosted_bss=0"
+						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.MultibssEnable=1"`
+						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeOperationCohostedBss=0"`
 					fi
 					if 	[ -n "$global_ap_cohosted_bss" ] && [ "$global_ap_cohosted_bss" = "enable" ]; then
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'multibss_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="multibss_enable=0"
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_operation_cohosted_bss' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_operation_cohosted_bss=1"
+						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.MultibssEnable=0"`
+						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeOperationCohostedBss=1"`
 					fi
 
 					# JIRA WLANRTSYS-9713: rais a flag; otherwise, when getting 'NONTXBSSINDEX' again, a new set of vaps will be created
 					global_is_vaps_created=1
-				fi
-				if [ "$global_is_vaps_created" = "1" ] && [ -n "$ap_ssid_non_tx_bss_index" ] && [ -n "$ap_non_tx_bss_index" ] && [ "$ap_non_tx_bss_index" -gt "1" ]; then
-					# handle indexes '2' and above; index '1' SSID was already set
-					local ap_vap_idx=$ap_non_tx_bss_index
-					tmp_current_o_vap="mbss_vap_$ap_vap_idx"
-					current_o_vap=`eval 'echo $'$tmp_current_o_vap`
-					$UCI_CMD set wireless.$current_o_vap.ssid="$ap_ssid_non_tx_bss_index"
 				fi
 				if [ "$ap_program" != "EHT" ]; then
 					[ "$ap_non_tx_bss_index" = "$global_num_non_tx_bss" ] && global_ap_mbssid=""
@@ -4220,38 +4266,37 @@ ap_set_wireless()
 				fi
 
 			else
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'multibss_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="multibss_enable=0"
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_operation_cohosted_bss' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_operation_cohosted_bss=1"
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.MultibssEnable=0"`
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeOperationCohostedBss=1"`
 			fi
 		fi
 		# Handle MBSSID feature - end
 
 		# Create AP-MLDs between 2.4GHz/5GHz + 6GHz band for MLO+MBSSID feature in EHT
 		if [ -n "$ap_mld_id" ] && [ -z "$global_ap_mbssid" ] && [ -n "$global_ap_cohosted_bss" ]; then
-			rand_mac_mld="ac:9a:96:84:68:45"
 			if [ "$ap_mld_id" = "2" ]; then
-				CURRENT_IFACE_UCI_PATH=$CURRENT_IFACE_UCI_PATH_2
-				CURRENT_6G_IFACE_UCI_PATH=$CURRENT_6G_IFACE_UCI_PATH_2
-				rand_mac_mld="ac:9a:96:84:68:46"
+				CURRENT_SSID_PATH=$CURRENT_SSID_PATH_2
+				CURRENT_6G_SSID_PATH=$CURRENT_6G_SSID_PATH_2
+				CURRENT_AP_PATH=$CURRENT_AP_PATH_2
+				CURRENT_6G_AP_PATH=$CURRENT_6G_AP_PATH_2
 			fi
-			debug_print "AP MLD mac address : $rand_mac_mld"
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ssid=$ap_ssid_cohosted_bss_index
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.ssid=$ap_ssid_cohosted_bss_index
-			ap_get_debug_hostap_conf=`grep 'mlo_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_6G_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-			ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_6G_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-			ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-			mac_addr=`$UCI_CMD get $CURRENT_IFACE_UCI_PATH.macaddr`
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-			mac_addr=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
-			$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
+			string1="$CURRENT_SSID_PATH.SSID=$ap_ssid_cohosted_bss_index"
+			string2="$CURRENT_6G_SSID_PATH.SSID=$ap_ssid_cohosted_bss_index"
+			string3="$CURRENT_AP_PATH.Vendor.MLO.MloId=$ap_mld_id"
+			string4="$CURRENT_6G_AP_PATH.Vendor.MLO.MloId=$ap_mld_id"
+			string5="exit"
+
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
+			sleep 5
+
+			string1="$CURRENT_AP_PATH.Vendor.GroupCipher='GCMP-256'"
+			string2="$CURRENT_6G_AP_PATH.Vendor.GroupCipher='GCMP-256'"
+			string3="$CURRENT_AP_PATH.Vendor.GroupMgmtCipher='BIP-GMAC-256'"
+			string4="$CURRENT_6G_AP_PATH.Vendor.GroupMgmtCipher='BIP-GMAC-256'"
+			string5="exit"
+
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
+			sleep 5
 		fi
 
 		if [ "$ap_srctrl_srvalue15allowed" != "" ]; then
@@ -4266,112 +4311,100 @@ ap_set_wireless()
 				send_error ",errorCode,203"
 				return
 			fi
-				
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sr_control_field_hesiga_spatial_reuse_value15_allowed' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sr_control_field_hesiga_spatial_reuse_value15_allowed=${ap_srctrl_srvalue15allowed}"
+
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=${ap_srctrl_srvalue15allowed}"`
 		fi
 
 		if [ "$ap_program" = "EHT" ] && [ "$ap_interface" != "" ] && [ "$glob_ap_mode" = "11be" ]; then
 			if [ "$global_ap_mbssid" = "" -a "$ap_mld_id" = "" -a "$global_ap_cohosted_bss" = "" ]; then
-				rand_mac_mld="ac:9a:96:84:68:44"
-				debug_print "AP MLD mac address : $rand_mac_mld"
 				mlo_counter=$((mlo_counter+1))
 				if [ "$ap_interface" = "24G" ]; then
-					ap_get_debug_hostap_conf=`grep 'mlo_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ssid=$glob_ssid
-					mlo_enable_5G=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-					mlo_enable_5G=${mlo_enable_5G##*=}
-					mlo_enable_6G=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-					mlo_enable_6G=${mlo_enable_6G##*=}
-					ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-					ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-					if [ "$mlo_enable_5G" = "1" ]; then
-						mac_addr=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.macaddr`
-						ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-						ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-						$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-						mac_addr=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-						$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-						ML_VAP1=$ap_interface
+					ap_5g_mlo_id=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.MLO.MloId?`
+					ap_5g_mlo_id=`echo $ap_5g_mlo_id | cut -d"=" -f2`
+					ap_6g_mlo_id=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.MLO.MloId?`
+					ap_6g_mlo_id=`echo $ap_6g_mlo_id | cut -d"=" -f2`
+					if [ "$ap_5g_mlo_id" == "$mlo_id_counter" ]; then
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						mlo_id_counter=$((mlo_id_counter+1))
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+						ML_VAP1="24G"
 						ML_VAP2="5G"
+					elif [ "$ap_6g_mlo_id" == "$mlo_id_counter" ]; then
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						mlo_id_counter=$((mlo_id_counter+1))
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+						ML_VAP1="24G"
+						ML_VAP2="6G"
 					else
-						if [ "$mlo_enable_6G" = "1" ]; then
-							mac_addr=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.macaddr`
-							ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-							ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-							$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-							mac_addr=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
-							$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-							ML_VAP2="6G"
-							ML_VAP1=$ap_interface
-						fi
+						mlo_id_counter=$((mlo_id_counter+1))
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 					fi
+					sleep 5
 				elif [ "$ap_interface" = "5G" ]; then
-					ap_get_debug_hostap_conf=`grep 'mlo_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ssid=$glob_ssid
-					mlo_enable_24G=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-					mlo_enable_24G=${mlo_enable_24G##*=}
-					mlo_enable_6G=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-					mlo_enable_6G=${mlo_enable_6G##*=}
-					ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-					ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-					if [ "$mlo_enable_24G" = "1" ]; then
-						mac_addr=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.macaddr`
-						ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-						ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-						$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-						mac_addr=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-						$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-						ML_VAP2=$ap_interface
+					ap_24g_mlo_id=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.MLO.MloId?`
+					ap_24g_mlo_id=`echo $ap_24g_mlo_id | cut -d"=" -f2`
+					ap_6g_mlo_id=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.MLO.MloId?`
+					ap_6g_mlo_id=`echo $ap_6g_mlo_id | cut -d"=" -f2`
+					if [ "$ap_24g_mlo_id" == "$mlo_id_counter" ]; then
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						mlo_id_counter=$((mlo_id_counter+1))
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 						ML_VAP1="24G"
+						ML_VAP2="5G"
+					elif [ "$ap_6g_mlo_id" == "$mlo_id_counter" ]; then
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						mlo_id_counter=$((mlo_id_counter+1))
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+						ML_VAP1="5G"
+						ML_VAP2="6G"
 					else
-						if [ "$mlo_enable_6G" = "1" ]; then
-							mac_addr=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
-							ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-							ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-							$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-							mac_addr=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-							$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-							ML_VAP1=$ap_interface
-							ML_VAP2="6G"
-						fi
-					fi	
-				elif [ "$ap_interface" = "6G" ]; then
-					ap_get_debug_hostap_conf=`grep 'mlo_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ssid=$glob_ssid
-					mlo_enable_24G=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-					mlo_enable_24G=${mlo_enable_24G##*=}
-					mlo_enable_5G=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-					mlo_enable_5G=${mlo_enable_5G##*=}
-					ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-					ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-					if [ "$mlo_enable_24G" = "1" ]; then
-						mac_addr=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
-						ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-						ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-						$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-						mac_addr=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.macaddr`
-						$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-						ML_VAP2=$ap_interface
-						ML_VAP1="24G"
-					else
-						if [ "$mlo_enable_5G" = "1" ]; then
-							mac_addr=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
-							ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-							ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-							$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-							mac_addr=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-							$UCI_CMD set $CURRENT_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-							ML_VAP2=$ap_interface
-							ML_VAP1="5G"
-						fi
+						mlo_id_counter=$((mlo_id_counter+1))
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 					fi
+					sleep 5
+				elif [ "$ap_interface" = "6G" ]; then
+					ap_24g_mlo_id=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.MLO.MloId?`
+					ap_24g_mlo_id=`echo $ap_24g_mlo_id | cut -d"=" -f2`
+					ap_5g_mlo_id=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.MLO.MloId?`
+					ap_5g_mlo_id=`echo $ap_5g_mlo_id | cut -d"=" -f2`
+					if [ "$ap_24g_mlo_id" == "$mlo_id_counter" ]; then
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						mlo_id_counter=$((mlo_id_counter+1))
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+						ML_VAP1="24G"
+						ML_VAP2="6G"
+					elif [ "$ap_5g_mlo_id" == "$mlo_id_counter" ]; then
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						mlo_id_counter=$((mlo_id_counter+1))
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+						ML_VAP1="5G"
+						ML_VAP2="6G"
+					else
+						mlo_id_counter=$((mlo_id_counter+1))
+						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
+						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string3="exit"
+						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+					fi
+					sleep 5
 				else
 					debug_print "!! Wrong Interface name !!"
 				fi
@@ -4383,10 +4416,9 @@ ap_set_wireless()
 			#Toffset = (384 - 52)/2 = 166
 			#With an offset of 166 the WFA tests were failing, and hence the value of 150 has been chosen empirically for now
 			if [ "$ML_VAP1" = "24G" ]; then
-				ap_get_debug_hostap_conf=`grep 'eht_mld_tsf_diff' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf="eht_mld_tsf_diff=150"
+				ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMldTsfDiff=160"`
 			fi
-
+#TODO-Imp
 			#TC-5.43.1 - Configure Medium Synchronization Delay parameters only for MLD VAP's
 			if [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ] && [ "$global_ap_mld_mediumsync_present" != "" ]; then
 				eval ML_VAP1_UCI_PATH=\${CURRENT_${ML_VAP1}_IFACE_UCI_PATH}
@@ -4409,21 +4441,29 @@ ap_set_wireless()
 				debug_print "Two static plan config enabled"
 				global_emlsr_tb_ul_ofdma=1
 			fi
-
 			#Handling the EPCS enable command
 			if [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ] && [ "$global_ap_eht_epcs" != "" ]; then
-				eval ML_VAP1_UCI_PATH=\${CURRENT_${ML_VAP1}_IFACE_UCI_PATH}
-				eval ML_VAP2_UCI_PATH=\${CURRENT_${ML_VAP2}_IFACE_UCI_PATH}
-				ap_get_debug_hostap_conf_idx_vap1=`uci show wireless | grep debug_hostap | grep $ML_VAP1_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-				let ap_get_debug_hostap_conf_idx_vap1=ap_get_debug_hostap_conf_idx_vap1+1
-				ap_get_debug_hostap_conf_vap1="debug_hostap_conf_$((ap_get_debug_hostap_conf_idx_vap1))"
-				ap_get_debug_hostap_conf_idx_vap2=`uci show wireless | grep debug_hostap | grep $ML_VAP2_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-				let ap_get_debug_hostap_conf_idx_vap2=ap_get_debug_hostap_conf_idx_vap2+1
-				ap_get_debug_hostap_conf_vap2="debug_hostap_conf_$((ap_get_debug_hostap_conf_idx_vap2))"
-				$UCI_CMD set $ML_VAP1_UCI_PATH.$ap_get_debug_hostap_conf_vap1="eht_mac_epcs_prio_access=$global_ap_eht_epcs"
-				$UCI_CMD set $ML_VAP2_UCI_PATH.$ap_get_debug_hostap_conf_vap2="eht_mac_epcs_prio_access=$global_ap_eht_epcs"
-			fi
+				debug_print "EhtMacEpcsPrioAccess:$global_ap_eht_epcs"
+				eval ML_VAP1_PATH=\${CURRENT_${ML_VAP1}_AP_PATH}
+				eval ML_VAP2_PATH=\${CURRENT_${ML_VAP2}_AP_PATH}
+				ret=`ubus-cli "$ML_VAP1_PATH.Vendor.EhtMacEpcsPrioAccess=$global_ap_eht_epcs"`
+				sleep 8
+				string1="$ML_VAP1_PATH.Vendor.WmmAcVOCWMax=3"
+				string2="$ML_VAP1_PATH.Vendor.WmmAcVICWMax=4"
+				string3="exit"
 
+				ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+				sleep 5
+
+				ret=`ubus-cli "$ML_VAP2_PATH.Vendor.EhtMacEpcsPrioAccess=$global_ap_eht_epcs"`
+				sleep 8
+				string1="$ML_VAP2_PATH.Vendor.WmmAcVOCWMax=3"
+				string2="$ML_VAP2_PATH.Vendor.WmmAcVICWMax=4"
+				string3="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+				sleep 5
+			fi
+#TODO-Imp
 			if [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ] && [ "$global_ap_eht_unsolicitedepcs" != "" ]; then
 				eval ML_VAP1_UCI_PATH=\${CURRENT_${ML_VAP1}_IFACE_UCI_PATH}
 				eval ML_VAP2_UCI_PATH=\${CURRENT_${ML_VAP2}_IFACE_UCI_PATH}
@@ -4436,13 +4476,13 @@ ap_set_wireless()
 				$UCI_CMD set $ML_VAP1_UCI_PATH.$ap_get_debug_hostap_conf_vap1="eht_mac_unsolicited_epcs_prio_access=$global_ap_eht_unsolicitedepcs"
 				$UCI_CMD set $ML_VAP2_UCI_PATH.$ap_get_debug_hostap_conf_vap2="eht_mac_unsolicited_epcs_prio_access=$global_ap_eht_unsolicitedepcs"
 			fi
-
+#TODO-Imp
 			#TC-4.50.1 - Basic load balancing Test - Tid to link mapping negotiation support
 			if [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ] && [ "$global_ap_t2lm_negotiation_support" != "" ] ; then
-				eval ML_VAP1_UCI_PATH=\${CURRENT_${ML_VAP1}_IFACE_UCI_PATH}
-				eval ML_VAP2_UCI_PATH=\${CURRENT_${ML_VAP2}_IFACE_UCI_PATH}
-				enable_mld_t2lm_negotiation_support $ML_VAP1_UCI_PATH
-				enable_mld_t2lm_negotiation_support $ML_VAP2_UCI_PATH
+				eval ML_VAP1_PATH=\${CURRENT_${ML_VAP1}_AP_PATH}
+				eval ML_VAP2_PATH=\${CURRENT_${ML_VAP2}_AP_PATH}
+				enable_mld_t2lm_negotiation_support $ML_VAP1_PATH
+				enable_mld_t2lm_negotiation_support $ML_VAP2_PATH
 			fi
 		else
 			debug_print "Program doesn't supports MLO"
@@ -4458,52 +4498,50 @@ ap_set_wireless()
 			#Third argument provided to the subroutine
 			#1-dynamic puncturing
 			#0-static puncturing
-			dis_subchnl_bitmap_val=`get_disabled_subchannel_bitmap_val $CURRENT_6G_RADIO_UCI_PATH $nof_channels 0`
+			dis_subchnl_bitmap_val=`get_disabled_subchannel_bitmap_val "PLAN_COMMON_6G" $nof_channels 0`
 
 			debug_print "dis_subchannel_bitmap_value=$dis_subchnl_bitmap_val"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'punct_bitmap' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="punct_bitmap=${dis_subchnl_bitmap_val}"
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.PunctureBitMap=${dis_subchnl_bitmap_val}"`
 		fi
 
 		if [ "$ap_he_txop_dur_rts_thr_conf" != "" ]; then
 			debug_print "ap_he_txop_dur_rts_thr_conf:$ap_he_txop_dur_rts_thr_conf"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_operation_txop_duration_rts_threshold' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_operation_txop_duration_rts_threshold=${ap_he_txop_dur_rts_thr_conf}"
+			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeOpTxopDurationRtsThreshold=${ap_he_txop_dur_rts_thr_conf}"`
 		fi
 
 		if [ "$ap_eht_scs_traffic_support" == "1" ]; then
 			debug_print "ap_eht_scs_traffic_support:$ap_eht_scs_traffic_support"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'eht_mac_scs_traffic_desc' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_scs_traffic_desc=${ap_eht_scs_traffic_support}"
-			$UCI_CMD set $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_scs_traffic_desc=${ap_eht_scs_traffic_support}"
-			$UCI_CMD set $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="eht_mac_scs_traffic_desc=${ap_eht_scs_traffic_support}"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_24G_RADIO_UCI_PATH`
-            set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x3=0 x4=1 x5=1 x6=0 x7=1 x8=2300 x9=26 x10=6 x11=6 x12=2 x13=2 x14=2 x15=3082 x16=3
-            set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x3=0 x4=1 x5=1 x6=0 x7=1 x8=2300 x9=26 x10=6 x11=6 x12=2 x13=2 x14=2 x15=3082 x16=3
-            set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=5 x3=0 x4=1 x5=1 x6=0 x7=1 x8=2300 x9=26 x10=6 x11=6 x12=2 x13=2 x14=2 x15=3082 x16=3	
+			string1="$CURRENT_24G_RADIO_PATH.Vendor.EhtMacScsTrafficDesc=${ap_eht_scs_traffic_support}"
+			string2="$CURRENT_5G_RADIO_PATH.Vendor.EhtMacScsTrafficDesc=${ap_eht_scs_traffic_support}"
+			string3="$CURRENT_6G_RADIO_PATH.Vendor.EhtMacScsTrafficDesc=${ap_eht_scs_traffic_support}"
+			string4="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+			sleep 5
+			set_get_helper "PLAN_COMMON_24G" x2=5 x3=0 x4=1 x5=1 x6=0 x7=1 x8=2300 x9=26 x10=6 x11=6 x12=2 x13=2 x14=2 x15=3082 x16=3
+			set_get_helper "PLAN_COMMON_5G" x2=5 x3=0 x4=1 x5=1 x6=0 x7=1 x8=2300 x9=26 x10=6 x11=6 x12=2 x13=2 x14=2 x15=3082 x16=3
+			set_get_helper "PLAN_COMMON_6G" x2=5 x3=0 x4=1 x5=1 x6=0 x7=1 x8=2300 x9=26 x10=6 x11=6 x12=2 x13=2 x14=2 x15=3082 x16=3
 			usr_index=1
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 
-			set_get_helper $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$usr_index" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
-			set_get_helper $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$usr_index" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
-			set_get_helper $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlannUser$usr_index" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
-
+			set_get_helper "PLAN_FOR_${usr_index}_USER_24G" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
+			set_get_helper "PLAN_FOR_${usr_index}_USER_5G" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
+			set_get_helper "PLAN_FOR_${usr_index}_USER_6G" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
 		fi
 
 		#Re-spawn SMD in-case Preamble Puncture was enabled as the previous SMD was spawned before Preamble Puncture config reached us
 		if [ "$global_ap_preamble_puncture" = "enable" ]; then
 			get_nof_sta_per_he_test_case $glob_ssid
 			ap_num_users_ofdma=$nof_sta
-			arguments_file_initializer $CURRENT_RADIO_UCI_PATH $glob_ssid
+			arguments_file_initializer $CURRENT_RADIO_PATH $glob_ssid $CURRENT_IFACE_NAME
 			kill_sigmaManagerDaemon
-			/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.0 $ap_num_users_ofdma &
+			/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.1 $ap_num_users_ofdma &
 		fi
-
+#TODO-Imp
 		if [ "$ap_rnr_op_class" != "" ] && [ "$ap_rnr_op_class" = "6_137" ]; then
 			eval ML_VAP1_UCI_PATH=\${CURRENT_${ML_VAP1}_RADIO_UCI_PATH}
 			ap_get_debug_hostap_conf=`uci show wireless | grep rnr_6g_op_class_137_allowed | grep $ML_VAP1_UCI_PATH | cut -d"." -f3 | cut -d"=" -f1 | sort -n | tail -1`
 			$UCI_CMD set $ML_VAP1_UCI_PATH.$ap_get_debug_hostap_conf="rnr_6g_op_class_137_allowed=1"
 		fi
+#TODO-Imp
 		if [ "$ap_rnr_tbtt_res" != "" -a "$ap_rnr_tbtt_res" = "nonzero" ] && [ "$ap_program" = "EHT" ]; then
 			ap_get_debug_hostap_conf_idx=`uci show wireless | grep debug_hostap | grep $CURRENT_24G_RADIO_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
 			ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf_idx+1))"
@@ -4520,6 +4558,7 @@ ap_set_wireless()
 	if [ -n "$ap_non_tx_bss_index" ]; then
 		sleep 10	# adding enough time for non-Tx interface to come up.
 	fi
+	plans_file_initializer
 	send_complete
 }
 
@@ -4654,11 +4693,10 @@ ap_set_11d()
 	IFS=$ORIG_IFS
 	send_running
 
-	get_common_uci_path
 	get_interface_details $@
 
-	if [ "$CURRENT_RADIO_UCI_PATH" = "" ]; then
-		debug_print "Can't obtain uci path"
+	if [ "$CURRENT_RADIO_PATH" = "" ]; then
+		debug_print "Can't obtain Radio path"
 	fi
 
 	while [ "$1" != "" ]; do
@@ -4677,14 +4715,15 @@ ap_set_11d()
 				# skip as it is determined in get_interface_details
 			;;
 			COUNTRYCODE)
-				debug_print "set parameter ap_country_code=$1"
-				radios=`uci show wireless | grep country | cut -d"." -f1-2`
-				for radio in $radios
-				do
-					$UCI_CMD set $radio.country=$1
-				done
-				radio_6ghz_disabled=`uci show wireless | grep 6GHz | cut -d"." -f1-2`
-				$UCI_CMD set $radio_6ghz_disabled.disabled='1' #currently 6GHz channel support not defined for all countrycode
+				debug_print "set parameter ap_countrycode=$1"
+				ap_countrycode=$1
+				string1="$CURRENT_24G_RADIO_PATH.RegulatoryDomain=$ap_countrycode"
+				string2="$CURRENT_5G_RADIO_PATH.RegulatoryDomain=$ap_countrycode"
+				string3="$CURRENT_6G_RADIO_PATH.Enable=0" #currently 6GHz channel support not defined for all countrycode
+				string4="exit"
+
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 35
 			;;
 			REGULATORY_MODE)
 				# param not supported
@@ -4707,91 +4746,37 @@ derive_key_mgnt_from_akmsuitetype()
 		debug_print "set parameter ap_keymgnt=$1"
 		ap_keymgnt=$1
 		get_uci_security_mode "$1"
-		ap_reg_domain=`$UCI_CMD get ${CURRENT_RADIO_UCI_PATH}.country3`
 
 		if [ "$ap_uci_security_mode" = "" ]; then
 			send_invalid ",errorCode,2"
 			return
 		else
 			if [ "$CONFIGURE_BOTH_BANDS" != "" ] && [ $CONFIGURE_BOTH_BANDS -gt 0 ]; then
-				$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.encryption=$ap_uci_security_mode
-				$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.encryption=$ap_uci_security_mode
+				string1="$CURRENT_24G_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"
+				string2="$CURRENT_5G_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"
+				string3="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+				sleep 10
 			else
 				if [ "$ucc_program" = "eht" -a "$ap_mld_id" = "" ]; then
-					$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.encryption=$ap_uci_security_mode
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.encryption=$ap_uci_security_mode
-					$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.encryption=$ap_uci_security_mode
+					string1="$CURRENT_24G_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"
+					string2="$CURRENT_5G_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"
+					string3="$CURRENT_6G_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"
+					string4="exit"
+					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+					sleep 10
 				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.encryption=$ap_uci_security_mode
+					ret=`ubus-cli "$CURRENT_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"`
 				fi
 			fi
 		fi
 
-		if [ "$ap_uci_security_mode" = "sae-mixed" ]; then
-			$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=1
-			if [ "$ucc_program" = "wpa3" ]; then
-				$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=1
-			else
-				$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=2
-            		fi
+		if [ "$ap_keymgnt" == "SAE-EXT-KEY" ]; then
+			ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.SaeExtKey=1"`
+			ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.SaeExtKey=1"`
+			ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.SaeExtKey=1"`
 		fi
-		if [ "$ap_uci_security_mode" = "sae" ] || [ "$ap_uci_security_mode" = "sae-ext-key" ]; then
-			if [ "$ucc_program" = "eht" ]; then
-				$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.ieee80211w=2
-                $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.auth_cache=1
-                $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.interworking=1
-				if [ "$ap_reg_domain" != "" ]; then
-					$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.mbo=1
-				else
-					$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.mbo=0
-				fi
-
-				$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.ieee80211w=2
-                $UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.auth_cache=1
-                $UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.interworking=1
-				if [ "$ap_reg_domain" != "" ]; then
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.mbo=1
-				else
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.mbo=0
-				fi
-
-				$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.ieee80211w=2
-                $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.auth_cache=1
-                $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.interworking=1
-				if [ "$ap_reg_domain" != "" ]; then
-					$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=1
-				else
-					$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=0
-				fi
-
-				if [ -z "$ap_non_tx_bss_index" ]; then
-					$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=1
-                    $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.sae_pwe=1
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.sae_pwe=1
-					$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.sae_pwe=1
-				fi
-			else
-				$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=2
-	            $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.auth_cache=1
-        	    $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.interworking=1
-                $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.mbo=0
-                #Enable both HnP and H2E in 2.4GHz/5GHz testbed mode if the base security configured is WPA3-SAE
-                #Enable H2E for both 6GHz DUT and Testbed modes
-                ap_sae_band=`$UCI_CMD get ${CURRENT_RADIO_UCI_PATH}.band | cut -d"=" -f2`
-                if [ -z "$ap_non_tx_bss_index" ]; then
-                    if [ "$ap_sae_band" = "6GHz" ]; then
-                        $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.mbo=1
-                        $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=1
-                    else #2.4GHz/5GHz
-                        $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=2
-                    fi
-                fi
-			fi
-		fi
-		if [ "$ap_uci_security_mode" = "owe" ]; then
-			$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=2
-			$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.mbo=0
-		fi
+		sleep 8
 }
 
 ap_set_security()
@@ -4799,73 +4784,55 @@ ap_set_security()
 	ap_name="Maxlinear"
 	IFS=$ORIG_IFS
 	send_running
-
+	
+	get_interface_details $@
+	
 	if [ "$ucc_program" = "eht" ]; then
 		if [ "$global_ap_mimo" = "dl" ] && [ "$ucc_type" = "dut" ]; then
 			if [ "$ML_VAP1" = "24G" ]; then #Handles cases 2.4GHz+5GHz and 2.4GHz+6GHz AP-MLDs
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_24G_WLAN_NAME.0 2 &
-				[ "$ML_VAP2" = "5G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.0 2 &
-				[ "$ML_VAP2" = "6G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.0 2 &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_24G_WLAN_NAME.1 2 &
+				[ "$ML_VAP2" = "5G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.1 2 &
+				[ "$ML_VAP2" = "6G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.1 2 &
 			else #Handles 5GHz+6GHz AP-MLD
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.0 2 &
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.0 2 &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.1 2 &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.1 2 &
 			fi
 		fi
 
 		if [ "$global_mu_txbf" = "" ] && [ "$glob_ap_ofdma" = "dl" ] && [ "$global_ap_tx_bf" = "" ] && [ "$global_ap_num_users_ofdma" = "2" ] && [ "$ucc_type" = "dut" ]; then
 			if [ "$ML_VAP1" = "24G" ]; then #Handles cases 2.4GHz+5GHz and 2.4GHz+6GHz AP-MLDs
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_24G_WLAN_NAME.0 2 &
-				[ "$ML_VAP2" = "5G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.0 2 &
-				[ "$ML_VAP2" = "6G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.0 2 &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_24G_WLAN_NAME.1 2 &
+				[ "$ML_VAP2" = "5G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.1 2 &
+				[ "$ML_VAP2" = "6G" ] && /lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.1 2 &
 			else #Handles 5GHz+6GHz AP-MLD
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.0 2 &
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.0 2 &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.1 2 &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.1 2 &
 			fi
 		fi
 	fi
 
 	debug_print "The value of the mlo_counter is $mlo_counter"
 	if [ "$mlo_counter" = "1" ] && [ "$global_ap_interface" != "" ]; then
-		rand_mac_mld="ac:9a:96:84:68:44"
 		if [ "$global_ap_interface" = "5G" ] || [ "$global_ap_interface" = "6G" ]; then
-			ap_get_debug_hostap_conf=`grep 'mlo_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.ssid=$glob_ssid
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.ssid=$glob_ssid
-
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-			ap_get_debug_hostap_conf="debug_hostap_conf_$ap_get_debug_hostap_conf"
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-			mac_addr=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.macaddr`
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-			ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-			mac_addr=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
+			string1="$CURRENT_5G_SSID_PATH.SSID=$glob_ssid"
+			string2="$CURRENT_5G_AP_PATH.Vendor.MLO.MloId=1"
+			string3="$CURRENT_6G_SSID_PATH.SSID=$glob_ssid"
+			string4="$CURRENT_6G_AP_PATH.Vendor.MLO.MloId=1"
+			string5="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
 			ML_VAP1="5G"
 			ML_VAP2="6G"
 		else
-			ap_get_debug_hostap_conf=`grep 'mlo_enable' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.ssid=$glob_ssid
-			$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mlo_enable=1"
-			$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.ssid=$glob_ssid
-
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-			ap_get_debug_hostap_conf="debug_hostap_conf_$ap_get_debug_hostap_conf"
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-			$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="ap_mld_mac=$rand_mac_mld"
-			mac_addr=`$UCI_CMD get $CURRENT_24G_IFACE_UCI_PATH.macaddr`
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
-			ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
-			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
-			mac_addr=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.macaddr`
-			$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="sibling_bss_mac=$mac_addr"
+			string1="$CURRENT_5G_SSID_PATH.SSID=$glob_ssid"
+			string2="$CURRENT_5G_AP_PATH.Vendor.MLO.MloId=1"
+			string3="$CURRENT_24G_SSID_PATH.SSID=$glob_ssid"
+			string4="$CURRENT_24G_AP_PATH.Vendor.MLO.MloId=1"
+			string5="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
 			ML_VAP1="24G"
 			ML_VAP2="5G"
 		fi
+#TODO-Imp
 		ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_IFACE_UCI_PATH | cut -d"_" -f5 | cut -d"=" -f1 | sort -n | tail -1`
 		ap_get_debug_hostap_conf="debug_hostap_conf_$((ap_get_debug_hostap_conf+1))"
 		$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mld_num_simul_links=0"
@@ -4873,10 +4840,9 @@ ap_set_security()
 		[ "$ML_VAP1" = "24G" ] && $UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mld_num_simul_links=0"
 	fi
 
-	get_common_uci_path
-	get_interface_details $@
 
-	if [ "$CURRENT_IFACE_UCI_PATH" = "" ]; then
+
+	if [ "$CURRENT_AP_PATH" = "" ]; then
 		debug_print "Can't obtain uci path"
 	fi
 
@@ -4898,8 +4864,10 @@ ap_set_security()
 			KEYMGNT)
 				debug_print "set parameter ap_keymgnt=$1"
 				ap_keymgnt=$1
+				ap_sae_ext=0
 				if [ "$ucc_program" = "eht" ] && [ ! -e "/tmp/sae_override" ]; then
-					ap_uci_security_mode="sae-ext-key"
+					ap_uci_security_mode="WPA3-Personal"
+					ap_sae_ext=1
 				else
 					get_uci_security_mode "$1"
 				fi
@@ -4910,128 +4878,32 @@ ap_set_security()
 				else
 					if [ "$CONFIGURE_BOTH_BANDS" != "" ] && [ $CONFIGURE_BOTH_BANDS -gt 0 ]
 					then
-						$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.encryption=$ap_uci_security_mode
-						$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.encryption=$ap_uci_security_mode
+						ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled=${ap_uci_security_mode}"`
+						ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.SaeExtKey=${ap_sae_ext}"`
+						ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled=${ap_uci_security_mode}"`
+						ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.SaeExtKey=${ap_sae_ext}"`
 					else
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.encryption=$ap_uci_security_mode
-					
+						ret=`ubus-cli "$CURRENT_AP_PATH.Security.ModeEnabled=${ap_uci_security_mode}"`
+						ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SaeExtKey=${ap_sae_ext}"`
 					fi
+					sleep 10
 				fi
-			
+
 				tc_name=`get_test_case_name $glob_ssid`
 				if [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ]; then
-					eval ML_VAP1_UCI_PATH=\${CURRENT_${ML_VAP1}_IFACE_UCI_PATH}
-					$UCI_CMD set $ML_VAP1_UCI_PATH.encryption=$ap_uci_security_mode
-					eval ML_VAP2_UCI_PATH=\${CURRENT_${ML_VAP2}_IFACE_UCI_PATH}
-					$UCI_CMD set $ML_VAP2_UCI_PATH.encryption=$ap_uci_security_mode
+					eval ML_VAP1_AP_PATH=\${CURRENT_${ML_VAP1}_AP_PATH}
+					eval ML_VAP2_AP_PATH=\${CURRENT_${ML_VAP2}_AP_PATH}
+					ret=`ubus-cli "$ML_VAP1_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"`
+					ret=`ubus-cli "$ML_VAP1_AP_PATH.Vendor.SaeExtKey=${ap_sae_ext}"`
+					ret=`ubus-cli "$ML_VAP2_AP_PATH.Security.ModeEnabled=$ap_uci_security_mode"`
+					ret=`ubus-cli "$ML_VAP2_AP_PATH.Vendor.SaeExtKey=${ap_sae_ext}"`
 				else
 					debug_print "MLD is not configured or the Program is not EHT"
 				fi
-								
-				if [ "$ap_uci_security_mode" = "sae-mixed" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=1
-					if [ "$ucc_program" = "wpa3" ]; then
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=1
-					else
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=2
-					fi
+				if [ "$ucc_program" != "eht" ] && [ "$ap_uci_security_mode" = "WPA3-Personal" ]; then
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.ApProtectedKeepAliveRequired=1"`
 				fi
-				if [ "$ap_uci_security_mode" = "sae" ] || [ "$ap_uci_security_mode" = "sae-ext-key" ]; then
-					if [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ]; then #Specific for EHT
-						debug_print "ML VAPS are $ML_VAP1 and $ML_VAP2"
-						ap_reg_domain=`$UCI_CMD get ${CURRENT_RADIO_UCI_PATH}.country3`
-						if [ "$ML_VAP1" = "24G" ]; then
-							$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.ieee80211w=2
-	        	            $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.auth_cache=1
-        	        	    $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.interworking=1
-							if [ "$ap_reg_domain" != "" ]; then
-								$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.mbo=1
-							else
-								$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.mbo=0
-							fi
-							[ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.sae_pwe=1
-							$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.ap_protected_keep_alive_required=1
-							if [ "$ML_VAP2" = "5G" ]; then
-								$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.ieee80211w=2
-								$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.auth_cache=1
-								$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.interworking=1
-								if [ "$ap_reg_domain" != "" ]; then
-									$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.mbo=1
-								else
-									$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.mbo=0
-								fi
-								[ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.sae_pwe=1
-								$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.ap_protected_keep_alive_required=1
-							else
-								$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.ieee80211w=2
-								$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.auth_cache=1
-								$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.interworking=1
-								if [ "$ap_reg_domain" != "" ]; then
-									$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=1
-								else
-									$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=0
-								fi
-								[ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=1
-								[ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.sae_pwe=1
-								#Advertise protected keepalive frames in BSS Max Idle IE when PMF is set
-								#Note that the lower layers may still accept unprotected keepalive frames from the station
-								$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.ap_protected_keep_alive_required=1
-							fi
-						elif [ "$ML_VAP1" = "5G" ] && [ "$ML_VAP2" = "6G" ]; then
-							$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.ieee80211w=2
-							$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.auth_cache=1
-							$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.interworking=1
-							if [ "$ap_reg_domain" != "" ]; then
-								$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.mbo=1
-							else
-								$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.mbo=0
-							fi
-							[ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.sae_pwe=1
-							$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.ap_protected_keep_alive_required=1
-		                    $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.ieee80211w=2
-                		    $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.auth_cache=1
-                            $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.interworking=1
-							if [ "$ap_reg_domain" != "" ]; then
-								$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=1
-							else
-								$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=0
-							fi
-							[ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.mbo=1
-                            [ -z "$ap_non_tx_bss_index" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.sae_pwe=1
-							#Advertise protected keepalive frames in BSS Max Idle IE when PMF is set
-	                        #Note that the lower layers may still accept unprotected keepalive frames from the station
-        	        	    $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.ap_protected_keep_alive_required=1
-						else
-							debug_print "MLD is  not configured yet"
-						fi
-					else
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=2
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.auth_cache=1
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.interworking=1
-						if [ "$ucc_program" != mbo ]; then
-							$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.mbo=0
-						fi
-						#Enable both HnP and H2E in 2.4GHz/5GHz testbed mode if the base security configured is WPA3-SAE
-						#Enable H2E for both 6GHz DUT and Testbed modes
-						ap_sae_band=`$UCI_CMD get ${CURRENT_RADIO_UCI_PATH}.band | cut -d"=" -f2`
-						if [ -z "$ap_non_tx_bss_index" ]; then
-							if [ "$ucc_program" != "eht" ] && [ "$ap_sae_band" = "6GHz" ]; then
-								$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.mbo=1
-								$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=1
-							else #2.4GHz/5GHz
-								$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=2
-							fi
-						fi
-					#Advertise protected keepalive frames in BSS Max Idle IE when PMF is set
-					#Note that the lower layers may still accept unprotected keepalive frames from the station
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ap_protected_keep_alive_required=1
-					fi
-				fi
-
-				if [ "$ap_uci_security_mode" = "owe" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=2
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.mbo=0
-				fi
+				sleep 10
 			;;
 			ENCRYPT)
 				debug_print "set parameter ap_encrypt=$1"
@@ -5042,7 +4914,7 @@ ap_set_security()
 				else
 					if [ "$ap_program" = "EHT" ]; then
 						echo "Requested configuration is not supported."
-					else
+					else #TODO-Imp
 						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.encryption=$ap_uci_encrypt
 					fi
 				fi
@@ -5052,26 +4924,27 @@ ap_set_security()
 				ap_psk=$1
 				if [ "$CONFIGURE_BOTH_BANDS" != "" ] && [ $CONFIGURE_BOTH_BANDS -gt 0 ]
 				then
-					$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.key=$1
-					$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.key=$1
+					ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase=$ap_psk"`
+					ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase=$ap_psk"`
 				else
 					if [ -n "$ML_VAP1" ] && [ -n "$ML_VAP2" ]; then
-						$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.key=$1
-						if [ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "5G" ]; then
-							$UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.key=$1
-						elif [ "$ML_VAP1" = "5G" ] && [ "$ML_VAP2" = "6G" ]; then
-							$UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.key=$1
-						else
-							debug_print "MLD is not configured yet"
-						fi
+						eval ML_VAP1_AP_PATH=\${CURRENT_${ML_VAP1}_AP_PATH}
+						eval ML_VAP2_AP_PATH=\${CURRENT_${ML_VAP2}_AP_PATH}
+						ret=`ubus-cli "$ML_VAP1_AP_PATH.Security.KeyPassPhrase=$ap_psk"`
+						ret=`ubus-cli "$ML_VAP1_AP_PATH.Security.SAEPassphrase='$ap_psk'"`
+						ret=`ubus-cli "$ML_VAP2_AP_PATH.Security.SAEPassphrase='$ap_psk'"`
+						ret=`ubus-cli "$ML_VAP2_AP_PATH.Security.KeyPassPhrase=$ap_psk"`
 					else
-						[ -z $ap_non_tx_bss_index ] && $UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.key=$1
+						ret=`ubus-cli "$CURRENT_AP_PATH.Security.KeyPassPhrase=\"$ap_psk\""`
+						[ "$ap_uci_security_mode" = "WPA3-Personal" ] && ret=`ubus-cli "$CURRENT_AP_PATH.Security.SAEPassphrase=$ap_psk"`
 					fi
 				fi
+				sleep 10
 			;;
 			WEPKEY)
 				debug_print "set parameter ap_wepkey=$1"
-				$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.key=$1
+				ret=`ubus-cli "$CURRENT_AP_PATH.Security.WEPKey=$1"`
+				sleep 4
 			;;
 			SSID)
 				debug_print "set parameter ap_ssid=$1"
@@ -5082,8 +4955,6 @@ ap_set_security()
 				if [ "$ap_uci_pmf" = "" ]; then
 					send_invalid ",errorCode,2"
 					return
-				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.ieee80211w=$ap_uci_pmf
 				fi
 			;;
 			SHA256AD)
@@ -5096,8 +4967,11 @@ ap_set_security()
 					"2;8")
 						derive_key_mgnt_from_akmsuitetype "WPA2-PSK-SAE"
 					;;
-					"24"|"8;24"|"24;8")
+					"24")
 						derive_key_mgnt_from_akmsuitetype "SAE-EXT-KEY"
+					;;
+					"8;24"|"24;8")
+						debug_print "By default AKM is set to 8, 24 for EHT program"
 					;;
 					"18")
 						derive_key_mgnt_from_akmsuitetype "OWE"
@@ -5114,7 +4988,7 @@ ap_set_security()
 				else
 					send_invalid ",errorCode,2"
 					return
-				fi
+				fi #TODO-Imp
 				$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.auth_cache=$ap_ac_enable
 			;;
 			ANTICLOGGINGTHRESHOLD)
@@ -5123,24 +4997,6 @@ ap_set_security()
 			;;
 			PAIRWISECIPHER)
 				debug_print "set parameter pairwise_cipher=$1"
-				get_uci_pairwise_cipher $1
-				if [ "$ucc_program" = "eht" ]; then
-					if [ -n "$ML_VAP1" ] || [ -n "$ML_VAP2" ]; then
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'wpa_pairwise' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="wpa_pairwise=$ap_cipher"
-						$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="wpa_pairwise=$ap_cipher"
-						[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="wpa_pairwise=$ap_cipher"
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'rsn_pairwise' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="rsn_pairwise=$ap_cipher"
-						$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="rsn_pairwise=$ap_cipher"
-						[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="rsn_pairwise=$ap_cipher"
-					else
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'wpa_pairwise' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-						$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.$ap_get_debug_hostap_conf_or_Post_Up_idx="wpa_pairwise=$ap_cipher"
-					fi
-				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.debug_hostap_conf="wpa_pairwise=$ap_cipher"
-				fi
 			;;
 			GROUPCIPHER)
 				# param not supported
@@ -5150,8 +5006,6 @@ ap_set_security()
 				debug_print "set parameter group_mgnt_cipher=$1"
 				if [ "$1" == "BIP-CMAC-128" ]; then
 					debug_print "Recieved BIP-CMAC-128"
-				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.debug_hostap_conf="group_mgmt_cipher=$1"
 				fi
 			;;
 			REFLECTION)
@@ -5165,12 +5019,6 @@ ap_set_security()
 			ECGROUPID)
 				debug_print "set parameter ec_group_id=$1"
 				ap_sae_groups=$1
-				if [ "$ucc_program" != "eht" ]; then
-					ap_sae_groups=`echo $1 | sed 's/;/ /g'`
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.debug_hostap_conf="sae_groups=$ap_sae_groups"
-				else
-					debug_print "do not configure ecgroup as hostapd is taking 19 0 as default"
-				fi
 			;;
 			NONTXBSSINDEX)
 				debug_print "ap_set_security: set ap_non_tx_bss_index=$1"
@@ -5180,8 +5028,8 @@ ap_set_security()
 				debug_print "set parameter ap_mld_id=$1"
 				ap_mld_id=$1
 				if [ "$ap_mld_id" = "2" ]; then
-					CURRENT_IFACE_UCI_PATH=$CURRENT_IFACE_UCI_PATH_2
-					[ "$ap_interface" = "6G" ] && CURRENT_IFACE_UCI_PATH=$CURRENT_6G_IFACE_UCI_PATH_2
+					CURRENT_AP_PATH=$CURRENT_AP_PATH_2
+					[ "$ap_interface" = "6G" ] && CURRENT_AP_PATH=$CURRENT_6G_AP_PATH_2
 				fi
 			;;
 			COHOSTEDBSSINDEX)
@@ -5192,12 +5040,7 @@ ap_set_security()
 				debug_print "ignore CHNLFREQ"
 			;;
 			SAE_PWE)
-				if [ "$1" = "looping" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=0
-				fi
-				if [ "$1" = "h2e" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.sae_pwe=1
-				fi
+				debug_print "Received ap_sae_pwe=$1"
 			;;
 			TRANSITION_DISABLE)
 				ap_transition_disable=$1
@@ -5213,64 +5056,6 @@ ap_set_security()
 		esac
 		shift
 	done
-
-	if [ -n "$ap_transition_disable" ]; then
-		if [ "$ap_transition_disable" = "1" ]; then
-			if [ -n "$ap_transition_disable_index" ]; then
-				local transition_disable=$((0x1 << $ap_transition_disable_index))
-				debug_print "transition_disable set to $transition_disable"
-				$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.transition_disable=$transition_disable
-			fi
-		fi
-	fi
-
-	if [ -n "$ap_non_tx_bss_index" ]; then
-		([ $ap_non_tx_bss_index -lt 1 ] || [ $ap_non_tx_bss_index -gt 8 ]) && error_print "NonTxBSSIndex invalid value '$1'" && send_invalid ",errorCode,96" && return
-		vap_index=$((ap_non_tx_bss_index))
-		if [ -n "$ap_keymgnt" ] && [ -n "$ap_psk" ]; then
-			[ "$ap_keymgnt" = "wpa2-psk" ] && ap_keymgnt="WPA2-Personal"
-			tmp_current_o_vap="mbss_vap_$vap_index"
-			current_o_vap=`eval 'echo $'$tmp_current_o_vap`
-			debug_print "------------------------ security: current_o_vap=$current_o_vap ------------------------"
-			$UCI_CMD set wireless.$current_o_vap.encryption="$ap_uci_security_mode"
-			$UCI_CMD set wireless.$current_o_vap.key="$ap_psk"
-			if [ "$ucc_program" = "eht" ]; then
-				$UCI_CMD set wireless.$current_o_vap.debug_hostap_conf_1="wpa_pairwise=GCMP-256"
-				$UCI_CMD set wireless.$current_o_vap.debug_hostap_conf_2="rsn_pairwise=GCMP-256"
-				$UCI_CMD set wireless.$current_o_vap.debug_hostap_conf_3="eml_capab_transition_timeout=4"
-				$UCI_CMD set wireless.$current_o_vap.group_mgmt_cipher="BIP-GMAC-256"
-			fi
-			#Enable both HnP and H2E in 2.4GHz/5GHz testbed mode if the base security configured is WPA3-SAE
-			#Enable H2E for both 6GHz DUT and Testbed modes
-			if [ "$ucc_program" != "eht" ] && [ "$ap_sae_band" = "6GHz" ]; then
-				$UCI_CMD set wireless.$current_o_vap.mbo=1
-				$UCI_CMD set wireless.$current_o_vap.sae_pwe=1
-			else #2.4GHz/5GHz
-				$UCI_CMD set wireless.$current_o_vap.sae_pwe=2
-			fi
-			ap_non_tx_bss_index=""
-			ap_keymgnt=""
-			ap_psk=""
-			ap_sae_band=""
-		fi
-	fi
-
-	if [ -n "$ap_cohosted_bss_index" ]; then
-		if [ -n "$ap_keymgnt" ] && [ -n "$ap_psk" ]; then
-			if [ "$ap_mld_id" = "$ap_cohosted_bss_index" ]; then
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.encryption="$ap_uci_security_mode"
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.key="$ap_psk"
-				#Enable both HnP and H2E testbed mode if the base security configured is WPA3-SAE
-				$UCI_CMD set $CURRENT_IFACE_UCI_PATH.sae_pwe=2
-				if [ "$ap_mld_id" = "2" ]; then
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.debug_hostap_conf_1="wpa_pairwise=GCMP-256"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.debug_hostap_conf_2="rsn_pairwise=GCMP-256"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.debug_hostap_conf_3="eml_capab_transition_timeout=4"
-					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.group_mgmt_cipher="BIP-GMAC-256"
-				fi
-			fi
-		fi
-	fi
 
 	send_complete
 }
@@ -5401,10 +5186,9 @@ ap_set_apqos()
 	IFS=$ORIG_IFS
 	send_running
 
-	get_common_uci_path
 	get_interface_details $@
 
-	if [ "$CURRENT_IFACE_UCI_PATH" = "" ]; then
+	if [ "$CURRENT_AP_PATH" = "" ]; then
 		debug_print "Can't obtain uci path"
 	fi
 
@@ -5421,47 +5205,50 @@ ap_set_apqos()
 				# skip as it is determined in get_interface_details
 			;;
 			CWMIN*)
-				lower "${token#CWMIN_*}" ap_actype
-				ap_acpref=${ap_actype#*cwmin_}
-				get_apqos_data_idx $ap_acpref
+				upper "${token#CWMIN_*}" ap_actype
+				ap_acpref=${ap_actype#*CWMIN_}
 				local ap_cwmin=$((1<<$1))
 				ap_cwmin=$((ap_cwmin-1))
 				debug_print "set parameter ap_cwmin=$ap_cwmin"
+				ap_acpref=`eval echo TxQueue${ap_acpref}CWMin`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmin=$ap_cwmin
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$ap_cwmin`
 				else #Specific for EHT
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmin=$ap_cwmin
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmin=$ap_cwmin	
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmin=$ap_cwmin
-				fi		
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$ap_cwmin`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$ap_cwmin`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$ap_cwmin`
+				fi
+				sleep 4
 			;;
 			CWMAX*)
-				lower "${token#CWMAX_*}" ap_actype
-				ap_acpref=${ap_actype#*cwmax_}
-				get_apqos_data_idx $ap_acpref
+				upper "${token#CWMAX_*}" ap_actype
+				ap_acpref=${ap_actype#*CWMAX_}
 				local ap_cwmax=$((1<<$1))
 				ap_cwmax=$((ap_cwmax-1))
 				debug_print "set parameter ap_cwmax=$ap_cwmax"
+				ap_acpref=`eval echo TxQueue${ap_acpref}CWMax`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmax=$ap_cwmax
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$ap_cwmax`
 				else #Specific for EHT
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmax=$ap_cwmax
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmax=$ap_cwmax
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_cwmax=$ap_cwmax
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$ap_cwmax`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$ap_cwmax`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$ap_cwmax`
 				fi
+				sleep 4
 			;;
 			AIFS*)
-				lower "${token#AIFS_*}" ap_actype
+				upper "${token#AIFS_*}" ap_actype
 				debug_print "set parameter ap_aifs=$1"
-				ap_acpref=${ap_actype#*aifs_}
-				get_apqos_data_idx $ap_acpref
+				ap_acpref=${ap_actype#*AIFS_}
+				ap_acpref=`eval echo TxQueue${ap_acpref}Aifs`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_aifs=$1
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$1`
 				else #Specific for EHT
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_aifs=$1	
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_aifs=$1
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.tx_queue_data${ap_data_idx}_aifs=$1
-				fi	
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$1`
+				fi
+				sleep 4
 			;;
 			TXOP*)
 				lower "${token#TXOP_*}" ap_actype
@@ -5490,10 +5277,9 @@ ap_set_staqos()
 	IFS=$ORIG_IFS
 	send_running
 
-	get_common_uci_path
 	get_interface_details $@
 
-	if [ "$CURRENT_IFACE_UCI_PATH" = "" ]; then
+	if [ "$CURRENT_AP_PATH" = "" ]; then
 		debug_print "Can't obtain uci path"
 	fi
 
@@ -5510,55 +5296,63 @@ ap_set_staqos()
 				# skip as it is determined in get_interface_details
 			;;
 			CWMIN*)
-				lower "${token#CWMIN_*}" ap_actype
+				upper "${token#CWMIN_*}" ap_actype
 				debug_print "set parameter ap_cwmin=$1"
-				ap_acpref=${ap_actype#*cwmin_}
+				ap_acpref=${ap_actype#*CWMIN_}
+				ap_acpref=`eval echo WmmAc${ap_acpref}CWMin`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmin=$1
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$1`
 				else #Specific for EHT	
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmin=$1
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmin=$1
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmin=$1
-				fi	
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$1`
+				fi
+				sleep 4
 			;;
 			CWMAX*)
-				lower "${token#CWMAX_*}" ap_actype
+				upper "${token#CWMAX_*}" ap_actype
 				debug_print "set parameter ap_cwmax=$1"
-				ap_acpref=${ap_actype#*cwmax_}
+				ap_acpref=${ap_actype#*CWMAX_}
+				ap_acpref=`eval echo WmmAc${ap_acpref}CWMax`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmax=$1
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$1`
 				else #Specific for EHT
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmax=$1	
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmax=$1	
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_cwmax=$1	
-				fi	
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$1`
+				fi
+				sleep 4
 			;;
 			AIFS*)
-				lower "${token#AIFS_*}" ap_actype
+				upper "${token#AIFS_*}" ap_actype
 				debug_print "set parameter ap_aifs=$1"
-				ap_acpref=${ap_actype#*aifs_}
+				ap_acpref=${ap_actype#*AIFS_}
+				ap_acpref=`eval echo WmmAc${ap_acpref}Aifs`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_aifs=$1
-				else #Specif for EHT
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_aifs=$1
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_aifs=$1
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_aifs=$1
-				fi	
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$1`
+				else #Specific for EHT
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$1`
+				fi
+				sleep 4
 			;;
 			TXOP*)
-				lower "${token#TXOP_*}" ap_actype
+				upper "${token#TXOP_*}" ap_actype
 				debug_print "set parameter ap_txop=$1"
-				ap_acpref=${ap_actype#*txop_}
+				ap_acpref=${ap_actype#*TXOP_}
+				ap_acpref=`eval echo WmmAc${ap_acpref}TXOP`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_txop_limit=$1
-				else #Specific for EHT	
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_txop_limit=$1
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_txop_limit=$1
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_txop_limit=$1
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$1`
+				else #Specific for EHT
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$1`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$1`
 				fi
+				sleep 4
 			;;
 			ACM*)
-				lower "${token#ACM_*}" ap_actype
+				upper "${token#ACM_*}" ap_actype
 				debug_print "set parameter ap_acm=$1"
 
 				if [ "$1" = "off" ]; then
@@ -5570,14 +5364,16 @@ ap_set_staqos()
 					return
 				fi
 
-				ap_acpref=${ap_actype#*acm_}
+				ap_acpref=${ap_actype#*ACM_}
+				ap_acpref=`eval echo WmmAc${ap_acpref}Acm`
 				if [ "$ucc_program" != "eht" ]; then
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_acm=$ap_acm_enable
-				else #Specific for aEHT	
-					$UCI_CMD set ${CURRENT_5G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_acm=$ap_acm_enable
-					[ "$ML_VAP1" = "24G" ] && $UCI_CMD set ${CURRENT_24G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_acm=$ap_acm_enable
-					[ "$ML_VAP2" = "6G" ] && $UCI_CMD set ${CURRENT_6G_IFACE_UCI_PATH}.wmm_ac_${ap_acpref}_acm=$ap_acm_enable
-				fi	
+					ret=`ubus-cli $CURRENT_AP_PATH.Vendor.$ap_acpref=$ap_acm_enable`
+				else #Specific for EHT
+					ret=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.$ap_acpref=$ap_acm_enable`
+					[ "$ML_VAP1" = "24G" ] && ret=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.$ap_acpref=$ap_acm_enable`
+					[ "$ML_VAP2" = "6G" ] && ret=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.$ap_acpref=$ap_acm_enable`
+				fi
+				sleep 4
 			;;
 			*)
 				error_print "while loop error $1"
@@ -5597,11 +5393,10 @@ ap_set_radius()
 	IFS=$ORIG_IFS
 	send_running
 
-	get_common_uci_path
 	get_interface_details $@
 
-	if [ "$CURRENT_IFACE_UCI_PATH" = "" ]; then
-		debug_print "Can't obtain uci path"
+	if [ "$CURRENT_AP_PATH" = "" ]; then
+		debug_print "Can't obtain AccessPoint path"
 	fi
 
 	while [ "$1" != "" ]; do
@@ -5624,31 +5419,52 @@ ap_set_radius()
 				fi
 				if [ "$CONFIGURE_BOTH_BANDS" != "" ] && [ $CONFIGURE_BOTH_BANDS -gt 0 ]
 				then
-					$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.server=$1
-					$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.server=$1
+					string1="$CURRENT_5G_AP_PATH.Security.RadiusServerIPAddr='$1'"
+					string2="$CURRENT_24G_AP_PATH.Security.RadiusServerIPAddr='$1'"
+					string3="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.server=$1
+					ret=`ubus-cli "$CURRENT_AP_PATH.Security.RadiusServerIPAddr='$1'"`
 				fi
+				sleep 5
 			;;
 			PORT)
 				debug_print "set parameter ap_port=$1"
 				if [ "$CONFIGURE_BOTH_BANDS" != "" ] && [ $CONFIGURE_BOTH_BANDS -gt 0 ]
 				then
-					$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.port=$1
-					$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.port=$1
+					string1="$CURRENT_5G_AP_PATH.Security.RadiusServerPort='$1'"
+					string2="$CURRENT_24G_AP_PATH.Security.RadiusServerPort='$1'"
+					string3="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.port=$1
+					ret=`ubus-cli "$CURRENT_AP_PATH.Security.RadiusServerPort='$1'"`
 				fi
+				sleep 5
 			;;
 			PASSWORD)
 				debug_print "set parameter ap_password=$1"
 				if [ "$CONFIGURE_BOTH_BANDS" != "" ] && [ $CONFIGURE_BOTH_BANDS -gt 0 ]
 				then
-					$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.key=$1
-					$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.key=$1
+					string1="$CURRENT_5G_AP_PATH.Security.RadiusSecret='1234567890'"
+					string2="$CURRENT_24G_AP_PATH.Security.RadiusSecret='1234567890'"
+					string3="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+					sleep 5
+
+					string1="$CURRENT_5G_AP_PATH.Vendor.RadiusSecretKey='$1'"
+					string2="$CURRENT_24G_AP_PATH.Vendor.RadiusSecretKey='$1'"
+					string3="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 				else
-					$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.key=$1
+					ret=`ubus-cli "$CURRENT_AP_PATH.Security.RadiusSecret='1234567890'"`
+					sleep 5
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.RadiusSecretKey='$1'"`
 				fi
+				sleep 5
 			;;
 			*)
 				error_print "while loop error $1"
@@ -5841,7 +5657,7 @@ dev_exec_action()
     done
 	if [ "$ap_keyrotation" -eq "1" ]; then
 		# Trigger the REKEY_GTK
-		hostapd_cli -i $CURRENT_WLAN_NAME.0 raw REKEY_GTK
+		hostapd_cli -i $CURRENT_WLAN_NAME.1 raw REKEY_GTK
 	fi
 
 	send_complete
@@ -5853,14 +5669,13 @@ ap_set_rfeature()
 	IFS=$ORIG_IFS
 	send_running
 
-	get_common_uci_path
 	get_interface_details $@
 
-	if [ "$CURRENT_RADIO_UCI_PATH" = "" ]; then
+	if [ "$CURRENT_RADIO_PATH" = "" ]; then
 		debug_print "Can't obtain uci path"
 	fi
 
-	if [ "$CURRENT_IFACE_UCI_PATH" = "" ]; then
+	if [ "$CURRENT_AP_PATH" = "" ]; then
 		debug_print "Can't obtain uci path"
 	fi
 
@@ -5902,9 +5717,16 @@ ap_set_rfeature()
 				debug_print "set parameter ap_chnum_band=$1"
 
 				ap_chnum_band=$1
-				ap_phy=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.phy`
 				ap_chan=${ap_chnum_band%%;*}
 				ap_band=${ap_chnum_band##*;}
+
+				if [ "$ap_interface" = "24G" ]; then
+					ap_phy="phy0"
+				elif [ "$ap_interface" = "5G" ]; then
+					ap_phy="phy1"
+				elif [ "$ap_interface" = "6G" ]; then
+					ap_phy="phy2"
+				fi
 
 				get_freq_from_chan $ap_phy $ap_chan
 				ap_new_freq=$ap_freq
@@ -5964,8 +5786,9 @@ ap_set_rfeature()
 					ap_enable=0
 				fi
 
-				ap_macaddr=`$UCI_CMD get $CURRENT_IFACE_UCI_PATH.macaddr`
-				ap_cmd="$HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME mbo_bss_assoc_disallow $ap_macaddr $ap_enable"
+				ap_mac=`ubus-cli $CURRENT_SSID_PATH.BSSID?`
+				ap_mac=`echo $ap_mac | cut -d"=" -f2 | tr -d '"'`
+				ap_cmd="$HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME mbo_bss_assoc_disallow $ap_mac $ap_enable"
 				ap_tmp=`eval $ap_cmd`
 			;;
 			DISASSOC_TIMER)
@@ -6132,25 +5955,38 @@ ap_set_rfeature()
 				debug_print "set parameter ap_unsolicitedproberesp=$1"
 				lower "$1" ap_unsolicitedproberesp
 				if [ "$ap_unsolicitedproberesp" = "enable" ]; then
-					ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame probe`
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='UPR'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=20"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
 				else
-					ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame disable`
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='Default'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
 				fi
-				#ap_tmp=`eval $UPDATE_RNR_CLI enable`
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 5
 			;;
 			CADENCE_UNSOLICITEDPROBERESP)
 				debug_print "set parameter ap_cadence_unsolicitedproberesp=$1"
 				lower "$1" ap_cadence_unsolicitedproberesp
-				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $ap_wlan_6g_name set_unsolicited_frame_duration $ap_cadence_unsolicitedproberesp`
+				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_6G_WLAN_NAME set_unsolicited_frame_duration $ap_cadence_unsolicitedproberesp`
 			;;
 			FILSDSCV)
 				debug_print "set parameter ap_fils_dscv=$1"
 				lower "$1" ap_fils_dscv
 				if [ "$ap_fils_dscv" = "enable" ]; then
-					ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame fils`
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='FILSDiscovery'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=20"
 				else
-					ap_tmp=`eval $UPDATE_RNR_UCI unsolicited_frame disable`
+					string1="$CURRENT_6G_AP_PATH.DiscoveryMethodEnabled='Default'"
+					string2="$CURRENT_6G_AP_PATH.Vendor.UnsolBcastProbeRespInterval=0"
+					string3="$CURRENT_6G_AP_PATH.Vendor.FilsDiscoveryMaxInterval=0"
 				fi
+				string4="exit"
+				ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+				sleep 5
 			;;
 			TRIG_USRINFO_UL-MCS)
 				debug_print "set parameter ap_trig_usrinfo_ul_mcs=$1"
@@ -6207,11 +6043,11 @@ ap_set_rfeature()
 				ap_cwmax=$((ap_cwmax-1))
 				debug_print "set parameter ap_cwmax=$ap_cwmax"
 				if [ "$global_ap_epcs_frame" != "" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME set epcs_wmm_ac_${ap_acpref}_cwmax $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME set epcs_wmm_ac_${ap_acpref}_cwmax $1`
 				elif [ "$ap_non_tx_bss_idx" = "1" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_cwmax $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.2 set wmm_ac_${ap_acpref}_cwmax $1`
 				else
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.0 set wmm_ac_${ap_acpref}_cwmax $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_cwmax $1`
 				fi
 			;;
 			STA_WMMPE_ECWMIN*)
@@ -6223,11 +6059,11 @@ ap_set_rfeature()
 				ap_cwmin=$((ap_cwmin-1))
 				debug_print "set parameter ap_cwmin=$ap_cwmin"
 				if [ "$global_ap_epcs_frame" != "" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME set epcs_wmm_ac_${ap_acpref}_cwmin $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME set epcs_wmm_ac_${ap_acpref}_cwmin $1`
 				elif [ "$ap_non_tx_bss_idx" = "1" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_cwmin $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.2 set wmm_ac_${ap_acpref}_cwmin $1`
 				else
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.0 set wmm_ac_${ap_acpref}_cwmin $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_cwmin $1`
 				fi
 			;;
 			STA_WMMPE_AIFSN*)
@@ -6237,11 +6073,11 @@ ap_set_rfeature()
 				get_apqos_data_idx $ap_acpref
 				debug_print "set parameter ap_aifsn=$1"
 				if [ "$global_ap_epcs_frame" != "" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME set epcs_wmm_ac_${ap_acpref}_aifs $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME set epcs_wmm_ac_${ap_acpref}_aifs $1`
 				elif [ "$ap_non_tx_bss_idx" = "1" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_aifs $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.2 set wmm_ac_${ap_acpref}_aifs $1`
 				else
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.0 set wmm_ac_${ap_acpref}_aifs $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_aifs $1`
 				fi
 			;;
 			STA_WMMPE_TXOP*)
@@ -6250,11 +6086,11 @@ ap_set_rfeature()
 				debug_print "set parameter ap_txop=$1"
 				ap_acpref=${ap_actype#*txop_}
 				if [ "$global_ap_epcs_frame" != "" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME set epcs_wmm_ac_${ap_acpref}_txop_limit $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME set epcs_wmm_ac_${ap_acpref}_txop_limit $1`
 				elif [ "$ap_non_tx_bss_idx" = "1" ]; then
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_txop_limit $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.2 set wmm_ac_${ap_acpref}_txop_limit $1`
 				else
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.0 set wmm_ac_${ap_acpref}_txop_limit $1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 set wmm_ac_${ap_acpref}_txop_limit $1`
 				fi
 			;;
 			BTWT_ID)
@@ -6360,9 +6196,9 @@ ap_set_rfeature()
 				if [ "$global_ap_epcs_frame" != "" ]; then
 					epcs_sta_mac=$1
 					if [ "$global_ap_epcs_frame" = "teardown" ]; then
-						$HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME SEND_EPCS_TEARDOWN_FRAME $CURRENT_IFACE_IFNAME $epcs_sta_mac
+						$HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME SEND_EPCS_TEARDOWN_FRAME $CURRENT_AP_NAME $epcs_sta_mac
 					elif [ "$global_ap_epcs_frame" = "request" ]; then
-						$HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME SEND_EPCS_REQ_FRAME $CURRENT_IFACE_IFNAME $epcs_sta_mac dialog_token=10
+						$HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME SEND_EPCS_REQ_FRAME $CURRENT_AP_NAME $epcs_sta_mac dialog_token=10
 					fi
 				fi
 			;;
@@ -6406,7 +6242,7 @@ ap_set_rfeature()
 
 	if [ "$global_ap_epcs_frame" = "unsolicitedauthorize" ]; then
 		debug_print " going to trigger unsolicitedauthorize"
-		$HOSTAPD_CLI_CMD -i $CURRENT_IFACE_IFNAME SEND_UNSOLICITED_EPCS_RESP_FRAME $CURRENT_IFACE_IFNAME $epcs_sta_mac
+		$HOSTAPD_CLI_CMD -i $CURRENT_AP_NAME SEND_UNSOLICITED_EPCS_RESP_FRAME $CURRENT_AP_NAME $epcs_sta_mac
 	fi
 
 	if [ "$ucc_program" = "mbo" -o "$ucc_program" = "he" -o "$ucc_program" = "eht" ]
@@ -6459,12 +6295,13 @@ ap_set_rfeature()
 	if [ "$global_ap_btwt" = "1" ]; then
 		if [ "$ap_btwt_id" != "" ]; then
 			debug_print "Advertise BTWT schedule id:$ap_btwt_id flowtype:$ap_btwt_flowtype trigger:$ap_btwt_trigger wakedur:$ap_btwt_nominalminwakedur wakeintmant:$ap_btwt_wakeintervalmantissa wakeintexp: $ap_btwt_wakeintervalexp"
-			ap_tmp=`eval iw dev $CURRENT_WLAN_NAME.0 iwlwav sAdvertiseBcTwtSp 1 0 $ap_btwt_id $ap_btwt_flowtype $ap_btwt_trigger $ap_btwt_nominalminwakedur $ap_btwt_wakeintervalmantissa $ap_btwt_wakeintervalexp`
+			ap_tmp=`eval iw dev $CURRENT_WLAN_NAME.1 iwlwav sAdvertiseBcTwtSp 1 0 $ap_btwt_id $ap_btwt_flowtype $ap_btwt_trigger $ap_btwt_nominalminwakedur $ap_btwt_wakeintervalmantissa $ap_btwt_wakeintervalexp`
 		fi
 		if [ "$ucc_type" = "dut" ]; then
 			info_print "Disabling TXOP for BTWT with 2-users"
 			ap_tmp=`iw dev $CURRENT_WLAN_NAME iwlwav sTxopConfig 0x1FF 0 32767 4`
-			ap_band=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.band`
+			local ap_band=`ubus-cli $CURRENT_RADIO_PATH.OperatingFrequencyBand?`
+			ap_band=`echo $band | cut -d"=" -f2 | tr -d '"'`
 			if [ "$ap_band" = "5GHz" ] || [ "$ap_band" = "6GHz" ]; then
 				info_print "Use 1.5ms TXOP duration for BTWT with 2-users in 5GHz/6GHz for more efficient SP usage in DL"
 				ap_tmp=`iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 96 1090 3`
@@ -6478,13 +6315,13 @@ ap_set_rfeature()
 	if [ "$ap_teardownalltwt" = "1" ]; then
 		if [ "$ap_rxmac" != "" ]; then
 			debug_print "Teardown all TWT schedules for station:$ap_rxmac"
-			ap_sid=`cat /proc/net/mtlk/$CURRENT_WLAN_NAME.0/sta_list | grep "0" | grep -iF "$ap_rxmac" | awk '{print $3}'`
+			ap_sid=`cat /proc/net/mtlk/$CURRENT_WLAN_NAME.1/sta_list | grep "0" | grep -iF "$ap_rxmac" | awk '{print $3}'`
 			if [ "$ap_sid" = "" ]; then
 				error_print ""MAC not found: ap_rxmac:$ap_rxmac""
 				send_error ",errorCode,204"
 				return
 			fi
-			ap_tmp=`eval iw dev $CURRENT_WLAN_NAME.0 iwlwav sTxTwtTeardown $ap_sid 1`
+			ap_tmp=`eval iw dev $CURRENT_WLAN_NAME.1 iwlwav sTxTwtTeardown $ap_sid 1`
 		fi
 	fi
 
@@ -6498,10 +6335,10 @@ ap_set_rfeature()
 
 	if [ "$ap_twtelement" = "exclude" ]; then
 		debug_print "Exclude BTWT schedules from the beacon"
-		ap_tmp=`eval iw dev $CURRENT_WLAN_NAME.0 iwlwav sTerminateBcTwtSp 1`
+		ap_tmp=`eval iw dev $CURRENT_WLAN_NAME.1 iwlwav sTerminateBcTwtSp 1`
 		# turn static plan off
-		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
+		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 	fi
 
 	if [ "$ap_nss_mcs_opt" != "" ]; then
@@ -6543,20 +6380,16 @@ ap_set_rfeature()
 				local nss_mcs_val=`get_nss_mcs_val $ap_nss_opt $ap_mcs_opt`
 
 				if [ $ap_nss_opt -gt $global_nss_opt_ul ]; then
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_rx_he_mcs_map_less_than_or_equal_80_mhz=${nss_mcs_val}"
+					ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=${nss_mcs_val}"`
 					# JIRA WLANRTSYS-11028: part0-Rx part1-Tx
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'vht_mcs_set_part0' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part0=${nss_mcs_val}"
+					ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.VhtMcsSetPart0=${nss_mcs_val}"`
 					global_nss_opt_ul=${ap_nss_opt}
 				fi
 
 				if [ $ap_nss_opt -gt $global_nss_opt_dl ]; then
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="he_mcs_nss_tx_he_mcs_map_less_than_or_equal_80_mhz=${nss_mcs_val}"
+					ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=${nss_mcs_val}"`
 					# JIRA WLANRTSYS-11028: part0-Rx part1-Tx
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'vht_mcs_set_part1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-					$UCI_CMD set $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="vht_mcs_set_part1=${nss_mcs_val}"
+					ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.VhtMcsSetPart1=${nss_mcs_val}"`
 					global_nss_opt_dl=${ap_nss_opt}
 				fi
 			fi
@@ -6569,8 +6402,7 @@ ap_set_rfeature()
 		for usr_index in 1 2 3 4
 		do
 			# get MU DL MCS value
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${usr_index} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			current_ap_mcs=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x1`
+			current_ap_mcs=`get_index_from_db "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x1`
 			let current_ap_mcs="$current_ap_mcs%16"
 
 			# calculate the OFDMA MU NSS-MCS value (NSS: bits 5-4, MCS: bits 3-0)
@@ -6582,45 +6414,39 @@ ap_set_rfeature()
 
 			# set MU DL NSS MCS value
 			if [ "$glob_ofdma_phase_format" = "0" ]; then
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x1=${ap_ofdma_mu_nss_mcs_val}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x1=${ap_ofdma_mu_nss_mcs_val}
 			elif [ "$glob_ofdma_phase_format" = "1" ]; then
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x3=${ap_ofdma_mu_nss_mcs_val}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x3=${ap_ofdma_mu_nss_mcs_val}
 			fi
 		done
 
 		if [ "$ap_type" != "EHT" ]; then
 			ap_uci_commit_and_apply
 			sleep 20
-			if [ "$OS_NAME" = "UGW" ]; then
-				check_and_update_dc_registration
-			fi
 		fi
 	fi
 
 		# for test HE-4.43.1
 	if [ "$ap_disable_trigger_type" != "" ] && [ "$ap_disable_trigger_type" = "0" ]; then
 		# turn static plan off
-		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
+		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 	fi
 
 	# WLANRTSYS-11513 TC 5.61.1
 	if [ "$ap_ppdutxtype" != "" ]; then
 		if [ "$ap_ppdutxtype" = "HE-SU" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=0
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=0
 			[ "$ap_type" != "EHT" ] && refresh_static_plan
 		elif [ "$ap_ppdutxtype" = "legacy" ]; then
 			if [ "$ap_trig_variant" = "EHT" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
-				[ "$ML_VAP1" = "5G" ] && Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
-				[ "$ML_VAP1" = "24G" ] && Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
-				[ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "6G" ] && Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+				Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+				[ "$ML_VAP1" = "5G" ] && Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+				[ "$ML_VAP1" = "24G" ] && Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+				[ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "6G" ] && Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
 			else
 				[ "$ap_type" = "EHT" ] && iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 130 1 #Specific to send data using HE PPDU in EHT program(Like in TC EHT-4.11.2 )
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
 				[ "$ap_type" != "EHT" ] && refresh_static_plan
 			fi
 		else
@@ -6631,28 +6457,25 @@ ap_set_rfeature()
 	if [ "$ap_txbandwidth" != "" ]; then
 		debug_print "ap_txbandwidth:$ap_txbandwidth"
 		convert_Operation_ChWidth ${ap_txbandwidth}MHz
-		current_ht_mode=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.htmode`
-		[ "$current_ht_mode" = "VHT40+" -o "$current_ht_mode" = "VHT40-" ] && current_ht_mode="VHT40"
+		current_ht_mode=`ubus-cli $CURRENT_RADIO_PATH.OperatingChannelBandwidth?`
+		current_ht_mode=`echo $current_ht_mode | cut -d"=" -f2 | tr -d '"'`
 
 		# set for SU, only if not OFDMA MU TC
 		if [ "$glob_ofdma_phase_format" = "" ]; then
 			debug_print "if [ \"$glob_ofdma_phase_format\" = \"\" ]; then"
 			# JIRA WLANRTSYS-9189: remove the call to 'is_test_case_permitted_to_set_channel' - always set the channel
-			if [ "$current_ht_mode" != "VHT${ap_txbandwidth}" ]; then
+			if [ "$current_ht_mode" != "${ap_txbandwidth}MHz" ]; then
 				debug_print "vht_oper_chwidth_converted= $vht_oper_chwidth_converted"
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode=VHT${ap_txbandwidth}
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.vht_oper_chwidth=$vht_oper_chwidth_converted
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.OperatingChannelBandwidth='${ap_txbandwidth}MHz'"`
+				sleep 5
 				convert_fixed_rate ${ap_txbandwidth}MHz "ax"
-				Dynamic_set_get_helper_none_debug $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.sFixedRateCfg sFixedRateCfg x1=0 x2=${bw_converted} x3=$phym_converted x6=5 #band_width
-				ap_uci_commit_and_apply # commit and apply 
-				sleep 20
+				set_get_helper_non_debug "FIXED_RATE_CFG_${CURRENT_IFACE_NAME}" x1=0 x2=${bw_converted} x3=$phym_converted x6=5 #band_width
 			fi	
 		else
 			# JIRA WLANRTSYS-9189: remove the call to 'is_test_case_permitted_to_set_channel' - always set the channel
-			if [ "$current_ht_mode" != "VHT${ap_txbandwidth}" ]; then
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.htmode=VHT${ap_txbandwidth}
-				$UCI_CMD set $CURRENT_RADIO_UCI_PATH.vht_oper_chwidth=$vht_oper_chwidth_converted
-				ap_uci_commit_and_apply
+			if [ "$current_ht_mode" != "${ap_txbandwidth}MHz" ]; then
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.OperatingChannelBandwidth='${ap_txbandwidth}MHz'"`
+				sleep 5
 			fi
 		fi
 	
@@ -6662,10 +6485,9 @@ ap_set_rfeature()
 		[ "$ap_txbandwidth" = "80" ] && ap_txbandwidth=2
 		[ "$ap_txbandwidth" = "160" ] && ap_txbandwidth=3
 		[ "$ap_txbandwidth" = "320" ] && ap_txbandwidth=4
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		info_print "Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${txop_com_start_bw_limit_idx}=${ap_txbandwidth}"
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${txop_com_start_bw_limit_idx}=${ap_txbandwidth}
-		ap_num_participating_users=`iw dev $CURRENT_WLAN_NAME.0 station dump | grep -c Station` 
+		info_print "Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${txop_com_start_bw_limit_idx}=${ap_txbandwidth}"
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${txop_com_start_bw_limit_idx}=${ap_txbandwidth}
+		ap_num_participating_users=`iw dev $CURRENT_WLAN_NAME.1 station dump | grep -c Station`
 		info_print "ap_num_participating_users=$ap_num_participating_users"
 
 		local dl_sub_band1 dl_start_ru1 dl_ru_size1
@@ -6748,11 +6570,9 @@ ap_set_rfeature()
 		
 		## WLANRTSYS-12035
 		if [ $dl_ru_size1 -lt 2 ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
 		else
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
 		fi
 
 	
@@ -6760,14 +6580,13 @@ ap_set_rfeature()
 		for usr_index in 1 2 3 4
 		do
 			local tmp_param tmp_val
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			tmp_param="dl_sub_band$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x${dl_usr_sub_band_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_sub_band_per_usp_idx}=${tmp_val}
 	
 			tmp_param="dl_start_ru$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x${dl_usr_start_ru_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_start_ru_per_usp_idx}=${tmp_val}
 			tmp_param="dl_ru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x${dl_usr_ru_size_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_ru_size_per_usp_idx}=${tmp_val}
 		done
 
 		if [ "$glob_ofdma_phase_format" != "" ]; then
@@ -6790,8 +6609,7 @@ ap_set_rfeature()
 			start_bw_limit=$ap_txbandwidth
 		else
 			# else, get the bw from the SP
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
+			start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
 		fi
 
 		nof_users=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
@@ -6980,8 +6798,7 @@ ap_set_rfeature()
 			start_bw_limit=$ap_txbandwidth
 		else
 			# else, get the bw from the SP
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
+			start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
 		fi
 
 		user_index=0
@@ -7372,16 +7189,13 @@ ap_set_rfeature()
 		done
 
 		# user_index contains the number of users. set it to DB to be used by static plan.
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_num_of_participating_stations_idx}=${user_index}
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_num_of_participating_stations_idx}=${user_index}
 	
 		## WLANRTSYS-12035
 		if [ $dl_ru_size1 -lt 2 ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
 		else
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
 		fi
 	
 	
@@ -7390,16 +7204,15 @@ ap_set_rfeature()
 		for index in 1 2 3 4 
 		do
 			local tmp_param tmp_val
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			
 			tmp_param="dl_sub_band${index}";eval tmp_val=\$$tmp_param		
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${dl_usr_sub_band_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_sub_band_per_usp_idx}=${tmp_val}
 			
 			tmp_param="dl_start_ru${index}";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${dl_usr_start_ru_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_start_ru_per_usp_idx}=${tmp_val}
 			
 			tmp_param="dl_ru_size${index}";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${dl_usr_ru_size_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_ru_size_per_usp_idx}=${tmp_val}
 		done
 
 		# dynamically update STA index in DB
@@ -7417,20 +7230,19 @@ ap_set_rfeature()
 				let index=index+1
 				ap_aid_index=`convert_aid_for_wav700 $ap_aid_index`
 				[ $ap_aid_index -gt 0 ] && let ap_sta_index=$ap_aid_index-1
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${dl_usr_usp_station_indexes_idx}=${ap_sta_index}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_usp_station_indexes_idx}=${ap_sta_index}
 			done
 		fi
-		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
+		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 		connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 		if [ "$connected_stations" != "0" ]; then
-			[ "$ap_type" != "EHT" ] && send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_UCI_PATH $glob_ssid $CURRENT_WLAN_NAME.0
+			[ "$ap_type" != "EHT" ] && send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_PATH $glob_ssid $CURRENT_WLAN_NAME.1 $CURRENT_IFACE_NAME
 		else
 			#Required for 5.34.5 Step 4, where the NSS is modified from 1 to 2 and RU Allocation is done prior to stations associating to the AP
 			kill_sigmaManagerDaemon
-			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
-			/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.0 $user_index &
+			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
+			/lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.1 $user_index &
 		fi
 	fi
 
@@ -7453,44 +7265,38 @@ ap_set_rfeature()
 		fi
 
 		if [ "$ap_type" = "EHT" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			ap_sp_config_ltf=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_he_ltf_idx`
+			ap_sp_config_ltf=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_he_ltf_idx`
 			let ap_sp_ppdu_ltf=$ap_sp_config_ltf%4
 			let ap_sp_config_ltf=$ap_mu_dl_com_ndp_he_ltf*4+$ap_sp_ppdu_ltf
 			ap_mu_dl_com_he_ltf=${ap_sp_config_ltf}
 
-			ap_sp_config_cp=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_he_cp_idx`
+			ap_sp_config_cp=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_he_cp_idx`
 			let ap_sp_ppdu_cp=$ap_sp_config_cp%4
 			let ap_sp_config_cp=$ap_mu_dl_com_ndp_he_cp*4+$ap_sp_ppdu_cp
 			ap_mu_dl_com_he_cp=${ap_sp_config_cp}
 		fi
 		if [ "$ML_VAP1" = "24G" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_24G_RADIO_UCI_PATH`
-			[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-			[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+			[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+			[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
 			if [ "$ML_VAP2" = "6G" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_6G_RADIO_UCI_PATH`
-				[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-				[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+				[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+				[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
 			else
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_5G_RADIO_UCI_PATH`
-				[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-				[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+				[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+				[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
 			fi
 		else
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_6G_RADIO_UCI_PATH`
-			[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-			[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+			[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+			[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
 
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_5G_RADIO_UCI_PATH`
-			[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-			[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+			[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+			[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
 		fi
 	fi
 
 	if [ "$ap_ltf" != "" ] || [ "$ap_gi" != "" ]; then
 		debug_print "ap_ltf:$ap_ltf ap_gi:$ap_gi"		
-        	tc_name=`get_test_case_name $glob_ssid`
+		tc_name=`get_test_case_name $glob_ssid`
 		if [ "$ap_type" = "EHT" ]; then
 			kill_sigmaManagerDaemon
 		else
@@ -7538,13 +7344,12 @@ ap_set_rfeature()
 		debug_print "ap_mu_ul_com_he_cp:$ap_mu_ul_com_he_cp ap_mu_ul_com_he_ltf:$ap_mu_ul_com_he_ltf ap_mu_ul_com_he_tf_cp_and_ltf:$ap_mu_ul_com_he_tf_cp_and_ltf ap_mu_tf_len:$ap_mu_tf_len"
 
 		if [ "$ap_type" = "EHT" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			ap_sp_config_ltf=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_he_ltf_idx`
+			ap_sp_config_ltf=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_he_ltf_idx`
 			let ap_sp_ndp_ltf=$ap_sp_config_ltf/4
 			let ap_sp_config_ltf=$ap_mu_dl_com_he_ltf+$ap_sp_ndp_ltf*4
 			ap_mu_dl_com_he_ltf=${ap_sp_config_ltf}
 
-			ap_sp_config_cp=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_he_cp_idx`
+			ap_sp_config_cp=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_he_cp_idx`
 			let ap_sp_ndp_cp=$ap_sp_config_cp/4
 			let ap_sp_config_cp=$ap_mu_dl_com_he_cp+$ap_sp_ndp_cp*4
 			ap_mu_dl_com_he_cp=${ap_sp_config_cp}
@@ -7577,58 +7382,53 @@ ap_set_rfeature()
 		else
 		# set for MU
 			if [ "$ap_type" != "EHT" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-				[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
-				[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-				[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-				[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-				[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+				[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+				[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+				[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+				[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+				[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+				[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 				if [ "$ap_type" != "EHT" ] && [ "$global_ap_preamblepunctmode" = "" -a "$global_ap_preamblepunctchannel" = "" ]; then
 					refresh_static_plan
 				fi
 			else
 				if [ "$ML_VAP1" = "24G" ]; then
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_24G_RADIO_UCI_PATH`
-					[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-					[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
-					[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-					[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-					[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-					[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+					[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+					[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+					[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+					[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+					[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+					[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 
 					if [ "$ML_VAP2" = "6G" ]; then # for 2.4Ghz + 6GHz AP-MLD
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_6G_RADIO_UCI_PATH`
-						[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-						[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
-						[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-						[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-						[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-						[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+						[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+						[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+						[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+						[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+						[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+						[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 					else # for 2.4Ghz + 5GHz AP-MLD
-						ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_5G_RADIO_UCI_PATH`
-						[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-						[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
-						[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-						[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-						[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-						[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+						[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+						[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+						[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+						[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+						[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+						[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 					fi
 				elif [ "$ML_VAP1" = "5G" ]; then # for 5Ghz + 6GHz AP-MLD
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_5G_RADIO_UCI_PATH`	
-					[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-        		    [ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
-        			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-        		    [ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-        		    [ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-					[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
-					ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_6G_RADIO_UCI_PATH`
-					[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
-					[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
-					[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-					[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-					[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-					[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+					[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+        		    [ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+        			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+        		    [ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+        		    [ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+					[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
+
+					[ "$ap_mu_dl_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_cp_idx=${ap_mu_dl_com_he_cp}
+					[ "$ap_mu_dl_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$dl_com_he_ltf_idx=${ap_mu_dl_com_he_ltf}
+					[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+					[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+					[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+					[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 				else
 					error_print "The VAP configured in MLD is not correct"
 					send_invalid "errorCode,421"
@@ -7677,16 +7477,15 @@ ap_set_rfeature()
 		#Set for MU
 		for index in 1 2 3 4
 		do
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${ap_usr_index} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x$rcr_tf_usr_coding_type_bcc_or_lpdc_idx=${coding_type}
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x$rcr_tf_usr_ldpc_idx=${coding_type}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_coding_type_bcc_or_lpdc_idx=${coding_type}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=${coding_type}
 		done
 	fi
 
 	if [ "$ap_transmit_omi" != "" ] && [ "$ap_transmit_omi" = "1" ]; then
 		info_print "Sending an IW command to transmit non-eht OMI frames"
 		ap_eht_omi=0 #For FW use to understand that this is non-eht OMI transmission
-		aid_index=`$HOSTAPD_CLI_CMD -i$CURRENT_6G_WLAN_NAME.0 all_sta $CURRENT_6G_WLAN_NAME.0 | grep aid=`
+		aid_index=`$HOSTAPD_CLI_CMD -i$CURRENT_6G_WLAN_NAME.1 all_sta | grep aid=`
 		aid_index=${aid_index##*=}
 		if [ "$aid_index" != "" ]; then
 			let sta_index=$aid_index-64+256
@@ -7721,10 +7520,10 @@ ap_set_rfeature()
 		else
 			info_print "iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 70 1"
 			iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 70 1
-			info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
+			info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
 			## kill the daemon if active - we need it only with ap_ack_policy empty.
 			kill_sigmaManagerDaemon
-			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 			# JIRA WLANRTSYS-9307: in case "TRIGGERTYPE" was set, activate the SMD
 			is_activate_sigmaManagerDaemon=1
 			sleep 1
@@ -7750,18 +7549,15 @@ ap_set_rfeature()
 			# Enable MIMO and set the phase format to DL to have DL traffic work. Using sounding phase format (=2) will not enable DL traffic phase as this is an unsupported config in FW.
 			# MIMO will ensure to enable sounding implicitly.
 			glob_ofdma_phase_format=0
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_phases_format_idx}=$glob_ofdma_phase_format
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_mu_type_idx}=1
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_phases_format_idx}=$glob_ofdma_phase_format
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_mu_type_idx}=1
 
 			for ap_usr_index in 1 2
 			do
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${ap_usr_index} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 				if [ "$global_ap_mimo" != "ul" ]; then
-					Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_usr_index} x${dl_usr_ul_psdu_rate_per_usp_idx}=4
+					Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_ul_psdu_rate_per_usp_idx}=4
 				fi
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_usr_index} x${rcr_tf_usr_psdu_rate_idx}=4
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x${rcr_tf_usr_psdu_rate_idx}=4
 			done
 		;;
 		3)
@@ -7782,22 +7578,21 @@ ap_set_rfeature()
 			fi
 			if [ "$ap_type" != "EHT" ]; then
 				# (was 109) UL_LEN = 109 (together with PE_dis=1) causes T_PE to exceed 16usec, which is not according to standard
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=$ap_tf_len
-				ap_mu_tf_len=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${rcr_com_tf_length_idx}=$ap_tf_len
+				ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx`
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=0
 			else
-				Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=$ap_tf_len
-				ap_mu_tf_len=`get_index_from_db $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
-				Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
+				Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x${rcr_com_tf_length_idx}=$ap_tf_len
+				ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_24G" x$rcr_com_tf_length_idx`
+				Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x${dl_com_number_of_phase_repetitions_idx}=0
 
-				Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=$ap_tf_len
-				ap_mu_tf_len=`get_index_from_db $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
-				Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
+				Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x${rcr_com_tf_length_idx}=$ap_tf_len
+				ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_5G" x$rcr_com_tf_length_idx`
+				Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x${dl_com_number_of_phase_repetitions_idx}=0
 
-				Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=$ap_tf_len
-				ap_mu_tf_len=`get_index_from_db $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
-				Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
+				Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x${rcr_com_tf_length_idx}=$ap_tf_len
+				ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_6G" x$rcr_com_tf_length_idx`
+				Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x${dl_com_number_of_phase_repetitions_idx}=0
 			fi
 		;;
 		*)
@@ -7819,7 +7614,7 @@ ap_set_rfeature()
 
 			# Ack Policy MAC address handling
 			if [ "$glob_ap_ack_policy_mac" != "" ]; then
-				ap_aid=`cat /proc/net/mtlk/$CURRENT_WLAN_NAME.0/sta_list | grep "0" | grep -iF "$glob_ap_ack_policy_mac" | awk '{print $5}'`
+				ap_aid=`cat /proc/net/mtlk/$CURRENT_WLAN_NAME.1/sta_list | grep "0" | grep -iF "$glob_ap_ack_policy_mac" | awk '{print $5}'`
 				ap_aid=`convert_aid_for_wav700 $ap_aid`
 
 				[ "$ap_aid" = "" ] && error_print ""MAC not found: glob_ap_ack_policy_mac:$glob_ap_ack_policy_mac""
@@ -7847,9 +7642,8 @@ ap_set_rfeature()
 			# MU-BAR scenario TC 5.51 & 4.45
 			if [ "$ap_trigger_type" = "2" ]; then
 				ap_sequence_type=0  #HE_MU_SEQ_MU_BAR
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=310
-				ap_mu_tf_len=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${rcr_com_tf_length_idx}=310
+				ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx`
 			fi
 		;;
 		4)
@@ -7868,13 +7662,12 @@ ap_set_rfeature()
 
 	# update the phase format, only if needed
 	if [ "$ap_sequence_type" != "" ]; then
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
 		if [ "$ap_type" != "EHT" ]; then
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${sequence_type_idx}=${ap_sequence_type}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${sequence_type_idx}=${ap_sequence_type}
 		else
-			Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${sequence_type_idx}=${ap_sequence_type}
-			Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${sequence_type_idx}=${ap_sequence_type}
-			Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${sequence_type_idx}=${ap_sequence_type}
+			Dynamic_set_get_helper iw_off $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x${sequence_type_idx}=${ap_sequence_type}
+			Dynamic_set_get_helper iw_off $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x${sequence_type_idx}=${ap_sequence_type}
+			Dynamic_set_get_helper iw_off $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x${sequence_type_idx}=${ap_sequence_type}
 		fi
 
 		ap_interface_index=${ap_wlan_name/wlan/}
@@ -7887,8 +7680,7 @@ ap_set_rfeature()
 			# find the user id of the requested primary sta
 			for ap_user_id in 1 2 3 4
 			do
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_user_id $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				ap_sta_index=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_usr_usp_station_indexes_idx`
+				ap_sta_index=`get_index_from_db "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx`
 				
 				if [ "$ap_sta_index" = "$ap_sta_id" ]; then
 					glob_ap_user_id_prim=$ap_user_id
@@ -7899,27 +7691,25 @@ ap_set_rfeature()
 			# switch the OFDMA users, so the primary sta id will be at user 1 (first user). not needed if it is already in user 1.
 			if [ "$glob_ap_user_id_prim" != "1" ]; then
 				# 1. load the sta id of user1
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				ap_orig_sta_index=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_usr_usp_station_indexes_idx`
+				ap_orig_sta_index=`get_index_from_db "PLAN_FOR_${glob_ap_user_id_prim}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx`
 
 				# 2. store the primary sta id in user 1
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser1 x${dl_usr_usp_station_indexes_idx}=${ap_sta_id}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_1_USER_${CURRENT_IFACE_NAME}" x${dl_usr_usp_station_indexes_idx}=${ap_sta_id}
 				# 3. store the original sta id from user 1 in the found user
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${glob_ap_user_id_prim} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${glob_ap_user_id_prim} x${dl_usr_usp_station_indexes_idx}=${ap_orig_sta_index}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${glob_ap_user_id_prim}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_usp_station_indexes_idx}=${ap_orig_sta_index}
 			fi
 		fi
 
-		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
+		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 		connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 
 		# JIRA WLANRTSYS-9307: in case the SMD needed to be activated, make sure the plan won't be set
 		if [ "$is_activate_sigmaManagerDaemon" = "1" ]; then
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=0
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$operation_mode_idx=0
 		fi
 
-		[ "$ap_type" != "EHT" ] && send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_UCI_PATH $glob_ssid $CURRENT_WLAN_NAME.0
+		[ "$ap_type" != "EHT" ] && send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_PATH $glob_ssid $CURRENT_WLAN_NAME.1 $CURRENT_IFACE_NAME
 	fi
 	# for test HE-5.64.1 & 5.61.1
 	if [ "$ap_trig_interval" != "" ]; then
@@ -7930,14 +7720,12 @@ ap_set_rfeature()
 		iw $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 3 13 $ap_trig_interval 1
 
 		if [ "$ap_trig_interval" != "10000" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=0
 		fi
 
 		# for test 5.61.1_24G - Jira WLANRTSYS-80398
 		if [ "$ap_trig_interval" = "10000" ] && [ "$MODEL" = "WAV700_AP" ] && [ "$tc_name" = "5.61.1" ] && [ "$CURRENT_WLAN_NAME" = "wlan0" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=0
 		fi
 
 		[ "$ap_type" != "EHT" ] && refresh_static_plan
@@ -7947,18 +7735,15 @@ ap_set_rfeature()
 	then
 		# for test HE-5.61.1
 		if [ "$ap_trig_cominfo_ullength" = "601" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=610
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${rcr_com_tf_length_idx}=610
 		# for test HE-5.64.1
 		elif [ "$ap_trig_cominfo_ullength" = "2251" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=2254
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${rcr_com_tf_length_idx}=2254
 		else
 			# regular case, not '601' nor '2251'
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=$ap_trig_cominfo_ullength
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${rcr_com_tf_length_idx}=$ap_trig_cominfo_ullength
 		fi
-		ap_mu_tf_len=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
+		ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx`
 		[ "$ap_type" != "EHT" ] && refresh_static_plan
 	fi
 
@@ -7967,8 +7752,7 @@ ap_set_rfeature()
 	then
 		for usr_index in 1 2 3 4
 		do
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x${tf_usr_tf_mpdu_mu_spacing_factor_idx}=${ap_mpdu_mu_spacingfactor}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x${tf_usr_tf_mpdu_mu_spacing_factor_idx}=${ap_mpdu_mu_spacingfactor}
 		done
 	fi
 	
@@ -7976,14 +7760,13 @@ ap_set_rfeature()
 	if [ "$ap_trig_usrinfo_ul_mcs" != "" ]; then
 		for usr_index in 1 2 3 4
 		do
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			ap_mcs_nss=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x3`
+			ap_mcs_nss=`get_index_from_db "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x3`
 			ap_nss=$(((ap_mcs_nss)/16+1))
 			ap_trig_nss_mcs_val=$(((ap_trig_ul_nss*16)+ap_trig_usrinfo_ul_mcs))
 			if [ "$global_ap_mimo" != "ul" ]; then
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=${ap_trig_mu_nss_mcs_val}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=${ap_trig_mu_nss_mcs_val}
 			fi
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_psdu_rate_per_usp_idx==${ap_trig_mu_nss_mcs_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_psdu_rate_per_usp_idx==${ap_trig_mu_nss_mcs_val}
 		done
 		[ "$ap_type" != "EHT" ] && refresh_static_plan
 
@@ -7993,11 +7776,13 @@ ap_set_rfeature()
 #TODO : Handle the above scenario of receiving both the parameters in the same command
 	if [ "$ap_dyn_punct_channel" != "" ]; then
 
-		ap_phy=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.phy`
-		ap_chan=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.channel`
+		ap_phy="phy2"
+		ap_chan=`ubus-cli $CURRENT_RADIO_PATH.Channel?`
+		ap_chan=`echo $ap_chan | cut -d"=" -f2 | cut -d" " -f1 | head -n 1`
 		get_freq_from_chan $ap_phy $ap_chan
-		ap_band=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.htmode`
-		ap_band=`echo $ap_band | sed 's/[^0-9]*//g'`
+		ap_band=`ubus-cli $CURRENT_RADIO_PATH.OperatingChannelBandwidth?`
+		ap_band=`echo $ap_band | cut -d"=" -f2 | tr -d '"'`
+		get_bandwidth $ap_band
 		get_central_freq_vht $ap_chan $ap_band $ap_phy
 		[ "$ap_band" = "3201" -o "$ap_band" = "3202" ] && ap_band=320
 
@@ -8008,7 +7793,7 @@ ap_set_rfeature()
 			#Third argument provided to the subroutine
 			#1-dynamic puncturing
 			#0-static puncturing
-			dis_subchnl_bitmap_val=`get_disabled_subchannel_bitmap_val $CURRENT_RADIO_UCI_PATH $nof_channels 1`
+			dis_subchnl_bitmap_val=`get_disabled_subchannel_bitmap_val "PLAN_COMMON_6G" $nof_channels 1`
 		else
 			dis_subchnl_bitmap_val=0
 		fi
@@ -8057,14 +7842,12 @@ ap_set_rfeature()
 		for usr_index in 1 2 3
 		do
 			local tmp_param tmp_val
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			tmp_param="dl_sub_band$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x${dl_usr_sub_band_per_usp_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_sub_band_per_usp_idx}=${tmp_val}
 			tmp_param="ul_sub_band$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x${rcr_tf_usr_sub_band_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x${rcr_tf_usr_sub_band_idx}=${tmp_val}
 		done
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${sequence_type_idx}=${ap_preamblepunc_sequence_type}
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${sequence_type_idx}=${ap_preamblepunc_sequence_type}
 		[ "$ap_type" != "EHT" ] && refresh_static_plan
 	fi
 
@@ -8073,12 +7856,12 @@ ap_set_rfeature()
 		if [ "$ap_type" != "EHT" ]; then
                         get_nof_sta_per_he_test_case $glob_ssid
                         connected_stations=$nof_sta
-                        arguments_file_initializer $CURRENT_RADIO_UCI_PATH $glob_ssid
+                        arguments_file_initializer $CURRENT_RADIO_PATH $glob_ssid $CURRENT_IFACE_NAME
                         kill_sigmaManagerDaemon
                         if [ "$connected_stations" = "0" ]; then
                                 connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
                         fi
-                        /lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.0 $connected_stations &
+                        /lib/netifd/sigmaManagerDaemon.sh $CURRENT_WLAN_NAME.1 $connected_stations &
                         is_activate_sigmaManagerDaemon=0
                 else
                         tc_name=`get_test_case_name $glob_ssid`
@@ -8089,16 +7872,16 @@ ap_set_rfeature()
                                 if [ "$connected_stations" = "0" ]; then
                                         connected_stations=`get_connected_stations ${CURRENT_6G_WLAN_NAME/.0}`
                                 fi
-                                /lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.0 $connected_stations &
+                                /lib/netifd/sigmaManagerDaemon.sh $CURRENT_6G_WLAN_NAME.1 $connected_stations &
                         elif [ "$ML_VAP2" = "5G" ]; then
                                 if [ "$connected_stations" = "0" ]; then
                                         connected_stations=`get_connected_stations ${CURRENT_5G_WLAN_NAME/.0}`
                                 fi
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.0 $connected_stations &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_5G_WLAN_NAME.1 $connected_stations &
 				if [ "$connected_stations" = "0" ]; then
                                         connected_stations=`get_connected_stations ${CURRENT_24G_WLAN_NAME/.0}`
                                 fi
-				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_24G_WLAN_NAME.0 $connected_stations &
+				/lib/netifd/sigmaManagerDaemon.sh $CURRENT_24G_WLAN_NAME.1 $connected_stations &
                         else
                                 debug_print "MLD not configured yet"
                         fi
@@ -8110,13 +7893,13 @@ ap_set_rfeature()
 	if [ "$glob_ap_trigger_coding" != "" ]; then
 		debug_print "glob_ap_trigger_coding:$glob_ap_trigger_coding"
 		
-		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
+		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
 		if [ "$ap_type" = "EHT" ]; then
-			send_plan_off ${CURRENT_24G_WLAN_NAME/.0} $CURRENT_24G_RADIO_UCI_PATH
-			send_plan_off ${CURRENT_5G_WLAN_NAME/.0} $CURRENT_5G_RADIO_UCI_PATH
-			send_plan_off ${CURRENT_6G_WLAN_NAME/.0} $CURRENT_6G_RADIO_UCI_PATH
+			send_plan_off ${CURRENT_24G_WLAN_NAME/.0} $CURRENT_24G_IFACE_NAME
+			send_plan_off ${CURRENT_5G_WLAN_NAME/.0} $CURRENT_5G_IFACE_NAME
+			send_plan_off ${CURRENT_6G_WLAN_NAME/.0} $CURRENT_6G_IFACE_NAME
 		else
-			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+			send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 		fi
 		info_print "ap_bcc_ldpc_int: BCC or LDPC"
 		if [ "$glob_ap_trigger_coding" = "BCC" ]; then
@@ -8128,53 +7911,49 @@ ap_set_rfeature()
 		tc_name=`get_test_case_name $glob_ssid`
 		for usr_index in 1 2 3 4
 		do
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${usr_index} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			if [ "$ap_type" = "EHT" ]; then
 				if [ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "5G" ]; then
 					if [ "$ap_bcc_ldpc_int" = "0" ]; then
-					    Dynamic_set_get_helper iw_off_helper $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
+					    Dynamic_set_get_helper iw_off_helper $CURRENT_24G_WLAN_NAME "PLAN_FOR_${usr_index}_USER_24G" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
 				    fi
-                    Dynamic_set_get_helper iw_off_helper $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
+                    Dynamic_set_get_helper iw_off_helper $CURRENT_5G_WLAN_NAME "PLAN_FOR_${usr_index}_USER_5G" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
                 elif [ "$ML_VAP2" = "6G" ]; then
-					Dynamic_set_get_helper iw_off_helper $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
-					[ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "6G" ] && Dynamic_set_get_helper iw_off_helper $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
+					Dynamic_set_get_helper iw_off_helper $CURRENT_6G_WLAN_NAME "PLAN_FOR_${usr_index}_USER_6G" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
+					[ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "6G" ] && Dynamic_set_get_helper iw_off_helper $CURRENT_24G_WLAN_NAME "PLAN_FOR_${usr_index}_USER_24G" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int x18=$ap_bcc_ldpc_int
 				else
 					debug_print "MLD is not configured yet"
 				fi
 			else
-				Dynamic_set_get_helper iw_off_helper $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${usr_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
+				Dynamic_set_get_helper iw_off_helper $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
 			fi
 		done
 		
 		if [ "$ap_type" != "EHT" ]; then
 			connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 			if [ "$connected_stations" = "1" ] || [ "$connected_stations" = "2" ] || [ "$connected_stations" = "4" ]; then
-				send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_UCI_PATH $glob_ssid $CURRENT_WLAN_NAME.0
+				send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_PATH $glob_ssid $CURRENT_WLAN_NAME.1 $CURRENT_IFACE_NAME
 			fi
 		fi
 	fi
 
 	if [ "$ap_cominfo_bw" != "" ]; then
 		debug_print "ap_cominfo_bw:$ap_cominfo_bw"
-		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH"
-		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_RADIO_UCI_PATH
+		info_print "Plan OFF send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME"
+		send_plan_off ${CURRENT_WLAN_NAME/.0} $CURRENT_IFACE_NAME
 		if [ "$ap_type" = "EHT" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx`
+			start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx`
 			if [ "$ap_cominfo_bw" -le "$start_bw_limit" ]; then
 				debug_print "Ignore this ComInfo BW"
 			else
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${txop_com_start_bw_limit_idx}=${ap_cominfo_bw}
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${txop_com_start_bw_limit_idx}=${ap_cominfo_bw}
 			fi
 		else
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${txop_com_start_bw_limit_idx}=${ap_cominfo_bw}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${txop_com_start_bw_limit_idx}=${ap_cominfo_bw}
 		fi
 
 		connected_stations=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 		if [ "$connected_stations" = "1" ] || [ "$connected_stations" = "2" ] || [ "$connected_stations" = "4" ]; then
-			[ "$ap_type" != "EHT" ] && send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_UCI_PATH $glob_ssid $CURRENT_WLAN_NAME.0
+			[ "$ap_type" != "EHT" ] && send_plan_for_${connected_stations}_users ${CURRENT_WLAN_NAME} $connected_stations $CURRENT_RADIO_PATH $glob_ssid $CURRENT_WLAN_NAME.1 $CURRENT_IFACE_NAME
 		fi
 	fi
 	
@@ -8222,9 +8001,8 @@ ap_set_rfeature()
 			line="${line//$ap_usrinfo_ss_alloc_ra_ru,/""}"
 			# update the DB with ss_alloc_ra_ru
 			# get MU UL MCS value
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			if [ "$ap_trig_usrinfo_ul_mcs" = "" ]; then
-				ap_mcs=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x3`
+				ap_mcs=`get_index_from_db "PLAN_FOR_${ap_usr_index}_USER_${CURRENT_IFACE_NAME}" x3`
 				let ap_mcs="$ap_mcs%16"
 			else
 				ap_mcs=$ap_trig_usrinfo_ul_mcs
@@ -8232,14 +8010,12 @@ ap_set_rfeature()
 			# calculate the OFDMA MU NSS-MCS value (NSS: bits 6-4, MCS: bits 3-0)
 			let ap_ofdma_mu_nss_mcs_val="($ap_usrinfo_ss_alloc_ra_ru)*16+$ap_mcs"
 			# set MU UL NSS MCS value
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'${index} $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			if [ "$global_ap_mimo" != "ul" ]; then
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${dl_usr_ul_psdu_rate_per_usp_idx}=$ap_ofdma_mu_nss_mcs_val
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_ul_psdu_rate_per_usp_idx}=$ap_ofdma_mu_nss_mcs_val
 			fi
 			ap_sta_aid=`convert_aid_for_wav700 "${line}"`
 			[ $ap_sta_aid -gt 0 ] && let sta_aid_val=$ap_sta_aid-1
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${dl_usr_usp_station_indexes_idx}=${sta_aid_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${dl_usr_usp_station_indexes_idx}=${sta_aid_val}
 
 		done < $AID_SS_FILE_SORTED
 
@@ -8248,24 +8024,23 @@ ap_set_rfeature()
 	
 	if [ "$ap_cominfo_gi_ltf" != "" ]; then
 		debug_print "ap_cominfo_gi_ltf:$ap_cominfo_gi_ltf"
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_mu_type_idx`
+		mu_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_mu_type_idx`
 		nof_users=`get_connected_stations ${CURRENT_WLAN_NAME/.0}`
 		if [ "$ap_cominfo_gi_ltf" = "1" ]; then
 			ap_mu_ul_com_he_cp=1
 			ap_mu_ul_com_he_ltf=1
 			ap_mu_ul_com_he_tf_cp_and_ltf=1
-			ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 3094`
+			ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 3094`
 			if [ "$ap_type" = "EHT" ] && [ "$start_bw_limit" = "4" ] && [ "$mu_type" = "0" ]; then
-				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 1591`
+				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 1591`
 				if [ "$nof_users" = "2" ]; then
-					ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 598`
+					ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 598`
 					ap_num_rep=3
 				fi
 			fi
 			if [ "$global_ap_mimo" = "ul" ]; then
-				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 208`
-				[ "$ap_type" = "EHT" ] && ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 832`
+				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 208`
+				[ "$ap_type" = "EHT" ] && ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 832`
 				ap_num_rep=3
 			fi
 		elif [ "$ap_cominfo_gi_ltf" = "2" ]; then
@@ -8274,63 +8049,62 @@ ap_set_rfeature()
 			ap_mu_ul_com_he_tf_cp_and_ltf=2
 			ap_mu_tf_len=2914
 			if [ "$ap_type" = "EHT" ] && [ "$start_bw_limit" = "4" ] && [ "$mu_type" = "0" ]; then
-				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 1594`
+				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 1594`
 				if [ "$nof_users" = "2" ]; then
-					ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 586`
+					ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 586`
 					ap_num_rep=3
 				fi
 			fi
 			if [ "$global_ap_mimo" = "ul" ]; then
-				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 202`
-				[ "$ap_type" = "EHT" ] && ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 802`
+				ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 202`
+				[ "$ap_type" = "EHT" ] && ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 802`
 				ap_num_rep=3
 			fi
 		elif [ "$ap_cominfo_gi_ltf" = "0" ]; then
 			ap_mu_ul_com_he_cp=1
 			ap_mu_ul_com_he_ltf=0
 			ap_mu_ul_com_he_tf_cp_and_ltf=0
-			ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.0 2914`
+			ap_mu_tf_len=`sp_set_plan_tf_length $CURRENT_WLAN_NAME.1 2914`
 		else
 			# all other LTF and GI combinations are not required by WFA
 			error_print "Unsupported value - ap_ltf:$ap_ltf ap_gi:$ap_gi"
 			send_invalid ",errorCode,482"
 			return
 		fi
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
 		debug_print "ap_mu_ul_com_he_cp:$ap_mu_ul_com_he_cp ap_mu_ul_com_he_ltf:$ap_mu_ul_com_he_ltf ap_mu_ul_com_he_tf_cp_and_ltf:$ap_mu_ul_com_he_tf_cp_and_ltf ap_mu_tf_len:$ap_mu_tf_len"
 
 		if [ "$ML_VAP1" != "" ] || [ "$ML_VAP2" != "" ]; then
-			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
-			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
+			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_5G_WLAN_NAME "PLAN_COMMON_5G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 
-			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
-			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
+			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_6G_WLAN_NAME "PLAN_COMMON_6G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 
-			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
-			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
+			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_24G_WLAN_NAME "PLAN_COMMON_24G" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 		else
-			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
-			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
-			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
-			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
-			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+			[ "$ap_num_rep" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=${ap_num_rep}
+			[ "$ap_mu_ul_com_he_cp" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$ul_com_he_cp_idx=${ap_mu_ul_com_he_cp}
+			[ "$ap_mu_ul_com_he_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$ul_com_he_ltf_idx=${ap_mu_ul_com_he_ltf}
+			[ "$ap_mu_ul_com_he_tf_cp_and_ltf" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_hegi_and_ltf_idx=${ap_mu_ul_com_he_tf_cp_and_ltf}
+			[ "$ap_mu_tf_len" != "" ] && Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 		fi
 		[ "$ap_type" != "EHT" ] && refresh_static_plan
 	fi
 
 	if [ "$global_ap_mimo" == "" ] && [ "$glob_ofdma_phase_format" = "1" ] &&  [ "$ap_type" = "EHT" ] && [ "$start_bw_limit" = "0" ]; then
 		# in EHT OFDMA UL, 20 MHz, set UL Length to 3082
-		ap_mu_tf_len=3082		
-		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common $rcr_com_tf_length_idx=${ap_mu_tf_len}
+		ap_mu_tf_len=3082
+		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" $rcr_com_tf_length_idx=${ap_mu_tf_len}
 	fi
 	
 		# handle RU allocation for UL
@@ -8350,8 +8124,7 @@ ap_set_rfeature()
 			start_bw_limit=$ap_cominfo_bw
 		else
 			# else, get the bw from the SP
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-			start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
+			start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
 		fi
 
 		user_index=0
@@ -8744,24 +8517,21 @@ ap_set_rfeature()
 		done
 
 		# user_index contains the number of users. set it to DB to be used by static plan.
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_num_of_participating_stations_idx}=${user_index}
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_num_of_participating_stations_idx}=${user_index}
 
 		# update per-user params in DB, per number of users
 		#for index in $user_index
 		for index in 1 2 3 4 
 		do
 			local tmp_param tmp_val
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			
-			tmp_param="ul_sub_band${index}";eval tmp_val=\$$tmp_param		
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${rcr_tf_usr_sub_band_idx}=${tmp_val}
+			tmp_param="ul_sub_band${index}";eval tmp_val=\$$tmp_param
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${rcr_tf_usr_sub_band_idx}=${tmp_val}
 			
 			tmp_param="ul_start_ru${index}";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${rcr_tf_usr_start_ru_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${rcr_tf_usr_start_ru_idx}=${tmp_val}
 			
 			tmp_param="ul_ru_size${index}";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${index} x${rcr_tf_usr_ru_size_idx}=${tmp_val}
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${index}_USER_${CURRENT_IFACE_NAME}" x${rcr_tf_usr_ru_size_idx}=${tmp_val}
 		done
 
 		[ "$ap_type" != "EHT" ] && refresh_static_plan
@@ -8770,9 +8540,9 @@ ap_set_rfeature()
 	if [ "$ap_type" = "EHT" ] && [ -n "$ap_acpref" ]; then
 		debug_print "Sending ML_BSS_CRITICAL_UPDATE in the hostapd_cli command"
 		if [ "$ap_cohosted_bss_idx" = "2" ] || [ "$ap_non_tx_bss_idx" != "" ]; then
-			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 ML_BSS_CRITICAL_UPDATE`
+			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.2 ML_BSS_CRITICAL_UPDATE`
 		else
-			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.0 ML_BSS_CRITICAL_UPDATE`
+			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME.1 ML_BSS_CRITICAL_UPDATE`
 		fi
 	fi
 
@@ -8784,7 +8554,7 @@ ap_set_rfeature()
 		do
 			j=$((count-1))
 			tmp_mac=`echo $ap_num_ss_mac | awk -v p="$count" '{ print $p }'`
-			aid=`cat /proc/net/mtlk/$CURRENT_WLAN_NAME.0/sta_list | grep ":" | grep -iF "$tmp_mac" | awk '{print $5}'`
+			aid=`cat /proc/net/mtlk/$CURRENT_WLAN_NAME.1/sta_list | grep ":" | grep -iF "$tmp_mac" | awk '{print $5}'`
 			tmp_sid=$((aid-64))
 			eval ap_num_ss_${tmp_sid}="${ap_num_ss:j:1}"
 			count=$((count+1))
@@ -8792,14 +8562,14 @@ ap_set_rfeature()
 	fi
 
 	if [ "$ap_type" = "EHT" ] && [ "$glob_ofdma_phase_format" != "" ]; then
-		[ "$ML_VAP1" = "5G" ] && refresh_static_plan_for_eht $CURRENT_6G_WLAN_NAME $CURRENT_6G_RADIO_UCI_PATH
-		refresh_static_plan_for_eht $CURRENT_5G_WLAN_NAME $CURRENT_5G_RADIO_UCI_PATH
-		[ "$ML_VAP1" = "24G" ] && refresh_static_plan_for_eht $CURRENT_24G_WLAN_NAME $CURRENT_24G_RADIO_UCI_PATH
+		[ "$ML_VAP1" = "5G" ] && refresh_static_plan_for_eht $CURRENT_6G_WLAN_NAME $CURRENT_6G_IFACE_NAME
+		refresh_static_plan_for_eht $CURRENT_5G_WLAN_NAME $CURRENT_5G_IFACE_NAME
+		[ "$ML_VAP1" = "24G" ] && refresh_static_plan_for_eht $CURRENT_24G_WLAN_NAME $CURRENT_24G_IFACE_NAME
 
 	if [ "$global_emlsr_tb_ul_ofdma" = "1" ]; then
-		[ "$ML_VAP1" = "5G" ] && CURRENT_INTERFACE_1="$CURRENT_6G_WLAN_NAME.0"
-		[ "$ML_VAP1" = "24G" ] && CURRENT_INTERFACE_1="$CURRENT_24G_WLAN_NAME.0"
-		CURRENT_INTERFACE_2="$CURRENT_5G_WLAN_NAME.0"
+		[ "$ML_VAP1" = "5G" ] && CURRENT_INTERFACE_1="$CURRENT_6G_WLAN_NAME.1"
+		[ "$ML_VAP1" = "24G" ] && CURRENT_INTERFACE_1="$CURRENT_24G_WLAN_NAME.1"
+		CURRENT_INTERFACE_2="$CURRENT_5G_WLAN_NAME.1"
 		/lib/netifd/sigmaManagerDaemon.sh $CURRENT_INTERFACE_1 0 $global_emlsr_tb_ul_ofdma $CURRENT_INTERFACE_2 $CURRENT_5G_WLAN_NAME &
 	fi
 
@@ -8807,11 +8577,11 @@ ap_set_rfeature()
 
 	#For WLANRTSYS-55649 TCs HE-4.40.4 and HE-4.64.1 this is a workaround where we introduce a delay after configuring he APUT to send trigger frame.
 	#This is required Cypress and Broadcom clients as they are TXing only S-MPDU and not aggregating.
-	#Adding enough time for the static plan to get applied for all HE test cases before traffic step started. Otherwise static plan will be applied in middle of traffic and throughput will get affected. 
-	if [ "$MODEL" = "WAV700_AP" ] && [ "$ucc_program" = "he" ]; then
-		sleep 30
+	#5 second delay is required as it is tried and tested
+	if [ "$MODEL" = "WAV700_AP" ] && ([ "$glob_ssid" = "HE-4.40.4" ] || [ "$glob_ssid" = "HE-4.64.1" ]); then
+		sleep 5
 	fi
-
+	plans_file_initializer
 	send_complete
 }
 
@@ -8821,7 +8591,6 @@ dev_send_frame()
 	IFS=$ORIG_IFS
 	send_running
 
-	get_common_uci_path
 	get_interface_details $@
 
 	while [ "$1" != "" ]; do
@@ -8841,7 +8610,6 @@ dev_send_frame()
 			;;
 			DEST_MAC)
 				ap_dest_mac=$1
-				lower "$1" ap_dest_mac_lower
 			;;
 			PROGRAM)
 				# do nothing
@@ -9009,10 +8777,10 @@ dev_send_frame()
 				ap_beacon_req_params=$ap_beacon_req_params" req_elements=$ap_reqinfo_param"
 			fi
 
-			ap_all_ifaces=`uci show wireless | grep ifname | awk -F"=" '{print $2}' | awk -v RS=  '{$1=$1}1' | tr -d "'"`
+			ap_all_ifaces=`ifconfig | grep wlan | cut -d" " -f1 | grep "\."`
 			IFS=$ORIG_IFS
 			for ap_curr_iface in $ap_all_ifaces; do
-				ap_res=`iw dev $ap_curr_iface station dump | grep $ap_dest_mac_lower`
+				ap_res=`iw dev $ap_curr_iface station dump | grep $ap_dest_mac`
 				if [ "$ap_res" != "" ]; then
 					ap_send_iface=$ap_curr_iface
 					break
@@ -9020,16 +8788,16 @@ dev_send_frame()
 			done
 
 			if [ "$ap_send_iface" != "" ]; then
-				CURRENT_IFACE_IFNAME=$ap_send_iface
+				CURRENT_AP_NAME=$ap_send_iface
 			fi
 
-			debug_print "$HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME REQ_BEACON $ap_beacon_req_params"
-			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME REQ_BEACON "$ap_beacon_req_params"`
+			debug_print "$HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME REQ_BEACON $ap_beacon_req_params"
+			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME REQ_BEACON "$ap_beacon_req_params"`
 		;;
 		BTMReq)
 			debug_print BTMReq
 			sleep 1 #WA if WNM notify received late
-			ap_cmd="$HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME BSS_TM_REQ $ap_dest_mac"
+			ap_cmd="$HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME BSS_TM_REQ $ap_dest_mac"
 
 			if [ "$ap_cand_list" != "" ]; then
 				ap_cmd="$ap_cmd pref=$ap_cand_list"
@@ -9043,8 +8811,10 @@ dev_send_frame()
 				fi
 				ap_cmd="$ap_cmd $CURRENT_NEIGHBORS"
 			elif [ "$ap_cand_list" != "" ]; then
-				ap_self_mac=`$UCI_CMD get $CURRENT_IFACE_UCI_PATH.macaddr`
-				ap_band=`$UCI_CMD get $CURRENT_RADIO_UCI_PATH.band`
+				ap_self_mac=`ubus-cli $CURRENT_SSID_PATH.BSSID?`
+				ap_self_mac=`echo $ap_self_mac | cut -d"=" -f2 | tr -d '"'`
+				ap_band=`ubus-cli $CURRENT_RADIO_PATH.OperatingFrequencyBand?`
+				ap_band=`echo $band | cut -d"=" -f2 | tr -d '"'`
 				if [ "$ap_band" = "5GHz" ]; then
 					ap_op_class=73
 					ap_op_chan=36
@@ -9080,7 +8850,8 @@ dev_send_frame()
 				BTM_REASSOC_DELAY=0
 			fi
 
-			ap_cell=`$UCI_CMD get ${CURRENT_IFACE_UCI_PATH}.mbo_cell_aware`
+			ap_cell=`ubus-cli "$CURRENT_AP_PATH.Vendor.MboCellAware?"`
+			ap_cell=`echo $ap_cell | cut -d"=" -f2 | cut -d" " -f1 | head -n 1`
 			if [ "$ap_cell" = "1" ]; then
 				ap_mbo_cell="1"
 			else
@@ -9115,18 +8886,19 @@ dev_send_frame()
 			BTM_REASSOC_DELAY=""
 
 			if [ "$ucc_program" != "eht" ]; then
-				ap_tmp_chan=`$UCI_CMD get ${CURRENT_RADIO_UCI_PATH}.channel`
+				ap_tmp_chan=`ubus-cli $CURRENT_RADIO_PATH.Channel?`
+				ap_tmp_chan=`echo $ap_tmp_chan | cut -d"=" -f2 | cut -d" " -f1 | head -n 1`
 				remove_neighbor_for_channel $ap_tmp_chan
 			fi
 
 		;;
 		disassoc)
-			debug_print $HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME DISASSOCIATE $CURRENT_IFACE_IFNAME $ap_dest_mac
-			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME DISASSOCIATE $CURRENT_IFACE_IFNAME $ap_dest_mac`
+			debug_print $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME DISASSOCIATE $CURRENT_AP_NAME $ap_dest_mac
+			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME DISASSOCIATE $CURRENT_AP_NAME $ap_dest_mac`
 		;;
 		MsntPilot)
 			local current_frame
-			current_frame=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 get_unsolicited_frame_support`
+			current_frame=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 get_unsolicited_frame_support`
 			ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME set_unsolicited_frame_duration $frame_duration`
 			if [ "$current_frame" = "0" ]; then
 				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME set_unsolicited_frame_support 2`
@@ -9134,24 +8906,24 @@ dev_send_frame()
 		;;
 		deauth)
 			if [ "$frame_protected" = "0" ]; then #unprotected deauth
-				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 set_unprotected_deauth 1`
-				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 DEAUTHENTICATE $ap_wlan_6g_name.0 $station_id test=0`
-				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 set_unprotected_deauth 0`
+				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 set_unprotected_deauth 1`
+				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 DEAUTHENTICATE $ap_wlan_6g_name.0 $station_id test=0`
+				ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 set_unprotected_deauth 0`
 			else
 				if [ "$frame_key" = "1" ]; then #protected with correct key deauth
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 deauthenticate $ap_wlan_6g_name.0 $station_id`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 deauthenticate $ap_wlan_6g_name.0 $station_id`
 				else #protected with incorrect key deauth
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 set_pn_reset 0`
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 set_incorrect_pn $station_id`
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 deauthenticate $ap_wlan_6g_name.0 $station_id test=0`
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 set_correct_pn $station_id`
-					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.0 set_pn_reset 1`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 set_pn_reset 0`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 set_incorrect_pn $station_id`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 deauthenticate $ap_wlan_6g_name.0 $station_id test=0`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 set_correct_pn $station_id`
+					ap_tmp=`eval $HOSTAPD_CLI_CMD -i $CURRENT_WLAN_NAME.1 set_pn_reset 1`
 				fi
 			fi
 		;;
 		T2LMTeardown)
-			debug_print $HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME SEND_T2LM_TEARDOWN_FRAME $CURRENT_IFACE_IFNAME $ap_dest_mac
-			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_IFACE_IFNAME SEND_T2LM_TEARDOWN_FRAME $CURRENT_IFACE_IFNAME $ap_dest_mac`
+			debug_print $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME SEND_T2LM_TEARDOWN_FRAME $CURRENT_AP_NAME $ap_dest_mac
+			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME SEND_T2LM_TEARDOWN_FRAME $CURRENT_AP_NAME $ap_dest_mac`
 		;;
 		*)
 			error_print "not supported frame_name $ap_frame_name"
@@ -9241,12 +9013,12 @@ disable_dynamic_ofdma_all_radios()
 ap_config_commit()
  {
 	if [ "$ucc_program" = "eht" ] && [ "$global_ap_mbssid" != "" -o "$global_ap_cohosted_bss" != "" ]; then
-		$UCI_CMD set wireless.default_radio10.dtim_period=1
-		$UCI_CMD set wireless.default_radio42.dtim_period=1
-		$UCI_CMD set wireless.default_radio74.dtim_period=1
-		$UCI_CMD set wireless.default_radio11.dtim_period=1
-		$UCI_CMD set wireless.default_radio43.dtim_period=1
-		$UCI_CMD set wireless.default_radio75.dtim_period=1
+		string1="$CURRENT_24G_RADIO_PATH.DTIMPeriod=1"
+		string2="$CURRENT_5G_RADIO_PATH.DTIMPeriod=1"
+		string3="$CURRENT_6G_RADIO_PATH.DTIMPeriod=1"
+		string4="exit"
+		ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+		sleep 5
 	fi
 	send_running
 
@@ -9259,7 +9031,7 @@ ap_config_commit()
 	fi
 
 	# Disable Dynamic OFDMA
-	disable_dynamic_ofdma_all_radios
+	#disable_dynamic_ofdma_all_radios
 
 	ap_uci_commit_and_apply
 
@@ -9275,10 +9047,6 @@ ap_config_commit()
 		fi
 		radio_6ghz_disabled=""
 	fi
-	if [ "$OS_NAME" = "UGW" ]; then
-		check_and_update_dc_registration
-		check_bridge_status
-	fi
 	
 	if [ "$ucc_program" = "eht" ]; then
 		#Fixing the frame retries limit
@@ -9288,9 +9056,9 @@ ap_config_commit()
 		iw $CURRENT_6G_WLAN_NAME iwlwav sTxRetryLimit 14 14
 
 		# To enable Group Addressed Data Frame, disable reliable multicast
-		iw dev $CURRENT_24G_WLAN_NAME.0 iwlwav sReliableMcast 0
-		iw dev $CURRENT_5G_WLAN_NAME.0 iwlwav sReliableMcast 0
-		iw dev $CURRENT_6G_WLAN_NAME.0 iwlwav sReliableMcast 0
+		iw dev $CURRENT_24G_WLAN_NAME.1 iwlwav sReliableMcast 0
+		iw dev $CURRENT_5G_WLAN_NAME.1 iwlwav sReliableMcast 0
+		iw dev $CURRENT_6G_WLAN_NAME.1 iwlwav sReliableMcast 0
 	fi
 
 	#This is a workaround for WLANRTSYS-54149 where ager was flushing out PDs which dint get air time
@@ -9298,16 +9066,6 @@ ap_config_commit()
 	#Note: sleep is required for the cmd to get reflected
 	if [ "$MODEL" = "WAV700_AP" ] && [ "$glob_ssid" = "HE-4.62.1_24G" ]; then
 		iw dev wlan0 iwlwav sDoSimpleCLI 126 0
-		sleep 2
-	fi
-
-	#This is a workaround for WLANRTSYS-86144 where Disable AMSDU Agg in BA Req
-	#hence Disabling AMSDU Agg in BA Req
-	#Note: sleep is required for the cmd to get reflected
-	if [ "$MODEL" = "WAV700_AP" ] && ([ "$glob_ssid" = "HE-5.61.1_24G" ] || [ "$glob_ssid" = "HE-5.61.1_5G" ]); then
-		iw dev $CURRENT_24G_WLAN_NAME.0 iwlwav sAggrConfig 0 1 256
-		sleep 2
-		iw dev $CURRENT_5G_WLAN_NAME.0 iwlwav sAggrConfig 0 1 256
 		sleep 2
 	fi
 
@@ -9327,54 +9085,795 @@ ap_config_commit()
 	#When enabling protection, Intel-L STA is acking the packets sent by the AP. Enabling protection as a workaround for 4.28.1_RUN1 TC.
 	if [ "$ucc_program" = "eht" ] && [ "$ucc_type" = "dut" ] && [ "$global_ap_tx_omn_resp_disable" = "1" ] && [ "$global_ap_ul_ofdma" = "" ] && [ "$ML_VAP1" != "" ] && [ "$ML_VAP2" != "" ]; then
 		if [ "$ML_VAP1" = "24G" ] && [ "$ML_VAP2" = "5G" ]; then
-			iw dev $CURRENT_24G_WLAN_NAME.0 iwlwav s11nProtection 2
-			iw dev $CURRENT_5G_WLAN_NAME.0 iwlwav s11nProtection 2
+			iw dev $CURRENT_24G_WLAN_NAME.1 iwlwav s11nProtection 2
+			iw dev $CURRENT_5G_WLAN_NAME.1 iwlwav s11nProtection 2
 		fi
 	fi
-	if [ "$ucc_program" = "mbo" ]; then
-		sleep 15
-	fi
+
 	#This is a workaround for WLANRTSYS-62397 where in HE-4.5.3_5G TC ping fails for Marvell station.
 	#By disabling prplmesh, ping is successful for Marvell station, hence disabling prplmesh.
-	/etc/init.d/prplmesh stop
+	ap_tmp=`eval /opt/prplmesh/scripts/prplmesh_utils.sh stop`
 
 	send_complete
 }
+
+ap_load_radio_config()
+{
+	debug_print "Load Radio Configs for program $1 and type $2"
+#This is required specifically if the AP
+#doesn't comes up in NOn-DFS channel by default.
+#Adding the sleep so that while changing the Channel
+#It should not cancel the ongoing CAC
+	local is_dfs_channel=`check_dfs_channel`
+	[ "$is_dfs_channel" == "1" ] && sleep 65
+
+	if [ "$1" == "eht" ]; then
+		global_has_he=1
+		global_has_eht=1
+	elif [ "$1" == "he" ]; then
+		global_has_he=1
+	elif [ "$1" == "11n" ]; then
+		global_has_11n=1
+	elif [ "$1" == "pmf" ]; then
+		global_has_pmf=1
+	elif [ "$1" == "wpa3" ]; then
+		global_has_wpa3=1
+	elif [ "$1" == "wpa2" ]; then
+		global_has_wpa2=1
+	elif [ "$1" == "vht" ]; then
+		global_has_vht=1
+	elif [ "$1" == "mbo" ]; then
+		global_has_mbo=1
+	fi
+	ap_type=$2
+
+	ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.AutoChannelEnable=0"`
+	ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.AutoChannelEnable=0"`
+	ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.AutoChannelEnable=0"`
+	sleep 8
+
+	if [ "$global_has_11n" == "1" -o "$global_has_pmf" == "1" -o "$global_has_wpa2" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=0"`
+		sleep 4
+
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=36"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='a,n'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=6"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='b,g,n'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
+		sleep 7
+	fi
+
+	if [ "$global_has_vht" == "1" -o "$global_has_wpa3" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=0"`
+		sleep 4
+
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		if [ "$global_has_wpa3" == "1" ]; then
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=44"`
+		else
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=36"`
+		fi
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='a,n,ac'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingChannelBandwidth='80MHz'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=6"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='b,g,n'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
+		sleep 7
+	fi
+
+	if [ "$global_has_mbo" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=0"`
+		sleep 4
+
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=36"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='a,n,ac'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.Country3='0x04'"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=6"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='b,g,n'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.Country3='0x04'"`
+		sleep 7
+	fi
+
+	if [ "$global_has_he" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=36"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='ax'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.VhtMcsSetPart0=65530"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.VhtMcsSetPart1=65530"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyLdpcCodingInPayload=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacamsduAckEnabledMpduSupport=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacMaxAMpduLengthExponent=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacOmControlSupport=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HtMinMpduStartSpacing=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.MultibssEnable=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyMacNc=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeOperationCohostedBss=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDcmMaxConstellationTx=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDcmMaxConstellationRx=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDcmMaxNssTx=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDcmMaxNssRx=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.TwtResponderSupport=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.Ieee80211nAcAxCompat=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacTwtResponderSupport=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EnableHeDebugMode=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeAifsn=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkAifsn=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkAci=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViAifsn=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViAci=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoAifsn=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoAci=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=255"`
+		if [ "$ap_type" = "testbed" ]; then
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhySuBeamformerCapable=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyBeamformeeStsLesOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyBeamformeeStsGreater80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDeviceClass=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhySuPpdu1xHeLtfAnd08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhySuPpduHeMu4xHeLtf08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyNdpWith4xHeLtfAnd32UsGi=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyNg16SuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyNg16MuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyNumSoundDimenLeOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyNumSoundDimenGreater80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDopplerRx=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDopplerTx=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyFullBandwidthUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyPartialBandwidthUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyPartialBWExtendedRange=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyTriggeredCqiFeedback=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyPpeThresholdsPresent=1"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyCodebookSize42SuSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyCodebookSize75MuSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyPowBoostFactAlphaSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacOmCtrlMuDisableRxSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeOpTxopDurationRtsThreshold=1023"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacUl2x996ToneRuSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacAckEnabledAggrSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacBroadcastTwtSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyDcmMaxBw=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyLong16HeSigOfdmSymSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacNdpFeedbackReportSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyRx1024QLt242ToneRuSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyRxFullBwSuUsingMuCompSigb=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyRxFulBwUsingMuNonComSigb=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyStbcTxLessThanOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyStbcTxGreaterThan80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeOperationErSuDisable=1"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyErSuPpdu4xLtf8UsGi=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyPreamblePuncturingRx=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacMultiTidAggrTxSupport=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMacMultiTidAggrRxSupport=0"`
+		fi
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='ax'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.VhtMcsSetPart0=65530"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.VhtMcsSetPart1=65530"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyLdpcCodingInPayload=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacamsduAckEnabledMpduSupport=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacMaxAMpduLengthExponent=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacOmControlSupport=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HtMinMpduStartSpacing=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.MultibssEnable=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyMacNc=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeOperationCohostedBss=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDcmMaxConstellationTx=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDcmMaxConstellationRx=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDcmMaxNssTx=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDcmMaxNssRx=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.TwtResponderSupport=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.Ieee80211nAcAxCompat=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacTwtResponderSupport=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EnableHeDebugMode=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeAifsn=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkAifsn=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkAci=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViAifsn=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViAci=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoAifsn=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoAci=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=255"`
+		if [ "$ap_type" = "testbed" ]; then
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhySuBeamformerCapable=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyBeamformeeStsLesOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyBeamformeeStsGreater80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDeviceClass=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhySuPpdu1xHeLtfAnd08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhySuPpduHeMu4xHeLtf08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyNdpWith4xHeLtfAnd32UsGi=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyNg16SuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyNg16MuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyNumSoundDimenLeOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyNumSoundDimenGreater80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDopplerRx=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDopplerTx=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyFullBandwidthUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyPartialBandwidthUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyPartialBWExtendedRange=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyTriggeredCqiFeedback=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyPpeThresholdsPresent=1"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyCodebookSize42SuSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyCodebookSize75MuSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyPowBoostFactAlphaSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacOmCtrlMuDisableRxSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeOpTxopDurationRtsThreshold=1023"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacUl2x996ToneRuSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacAckEnabledAggrSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacBroadcastTwtSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyDcmMaxBw=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyLong16HeSigOfdmSymSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacNdpFeedbackReportSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyRx1024QLt242ToneRuSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyRxFullBwSuUsingMuCompSigb=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyRxFulBwUsingMuNonComSigb=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyStbcTxLessThanOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyStbcTxGreaterThan80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeOperationErSuDisable=1"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyErSuPpdu4xLtf8UsGi=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyPreamblePuncturingRx=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacMultiTidAggrTxSupport=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMacMultiTidAggrRxSupport=0"`
+		fi
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Channel=37"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.OperatingStandards='ax'"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.VhtMcsSetPart0=65530"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.VhtMcsSetPart1=65530"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyLdpcCodingInPayload=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacamsduAckEnabledMpduSupport=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacOmControlSupport=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HtMinMpduStartSpacing=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.MultibssEnable=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssRxMapLessOrEqual80Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=65530"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyMacNc=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeOperationCohostedBss=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDcmMaxConstellationTx=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDcmMaxConstellationRx=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDcmMaxNssTx=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDcmMaxNssRx=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.TwtResponderSupport=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.Ieee80211nAcAxCompat=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacTwtResponderSupport=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EnableHeDebugMode=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeAifsn=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkAifsn=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkAci=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViAifsn=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViAci=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoAifsn=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoAci=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmin=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmax=15"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=255"`
+		if [ "$ap_type" = "testbed" ]; then
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhySuBeamformerCapable=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyBeamformeeStsLesOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyBeamformeeStsGreater80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDeviceClass=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhySuPpdu1xHeLtfAnd08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhySuPpduHeMu4xHeLtf08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyNdpWith4xHeLtfAnd32UsGi=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyNg16SuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyNg16MuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyNumSoundDimenLeOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyNumSoundDimenGreater80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDopplerRx=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDopplerTx=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyFullBandwidthUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyPartialBandwidthUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyPartialBWExtendedRange=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyTriggeredCqiFeedback=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyPpeThresholdsPresent=1"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyCodebookSize42SuSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyCodebookSize75MuSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyPowBoostFactAlphaSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacOmCtrlMuDisableRxSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeOpTxopDurationRtsThreshold=1023"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacUl2x996ToneRuSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacAckEnabledAggrSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacBroadcastTwtSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyDcmMaxBw=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyLong16HeSigOfdmSymSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacNdpFeedbackReportSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyRx1024QLt242ToneRuSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyRxFullBwSuUsingMuCompSigb=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyRxFulBwUsingMuNonComSigb=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyStbcTxLessThanOrEq80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyStbcTxGreaterThan80Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeOperationErSuDisable=1"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyErSuPpdu4xLtf8UsGi=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyPreamblePuncturingRx=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacMultiTidAggrTxSupport=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMacMultiTidAggrRxSupport=0"`
+		fi
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.commit()"`
+		sleep 7
+	fi
+
+	if [ "$global_has_eht" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='be'"`
+		sleep 4
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EnableEhtDebugMode=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMacEhtOmControl=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMacRestrictedTwt=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMacTrigTxopSharingMode1=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMacTrigTxopSharingMode2=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyTrigMuBfPartialBwFb=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMaxNc=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1011=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1011=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1213=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1213=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMaxAmpduLenExpExt=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformer=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformee=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMacMaxMpduLen=11000"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyPpeThresholdsPresent=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMldTsfDiff=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyCommonNominalPktPad=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs09=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1213=2"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1213=2"`
+		if [ "$ap_type" == "testbed" ]; then
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.TestBedMode=1"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNumSoundDim80MhzOrBelow=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw80MhzBelow=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNdp4xEhtLtfAnd32UsGi=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyPartialBwUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs80MhzOrBelow=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhy20MhzOpStaRxNdpWiderBw=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyEhtDupIn6Ghz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNg16SuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNg16MuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyCodebookSize42SuFb=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyCodebookSize755MuFb=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyTrigSuBfFb=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyTrigCqiFb=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyPartialBwDlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyPsrBasedSr=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyEhtMuPpdu4xEhtLtf08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyRx1024Qam4096QamBel242Ru=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMaxNumOfSupportedEhtLtfs=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyMcs15=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNonOfdmaMuMimo80MhzBelow=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.Rnr6gOpClass137Allowed=0"`
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.RnrTbttMldNonZeroPad=0"`
+		fi
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='be'"`
+		sleep 4
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EnableEhtDebugMode=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMacEhtOmControl=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMacRestrictedTwt=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMacTrigTxopSharingMode1=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMacTrigTxopSharingMode2=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyTrigMuBfPartialBwFb=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMaxNc=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1011=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1011=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1213=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1213=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMaxAmpduLenExpExt=2"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformer=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformee=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMacMaxMpduLen=11000"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyPpeThresholdsPresent=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMldTsfDiff=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyCommonNominalPktPad=2"`
+		if [ "$ap_type" == "testbed" ]; then
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.TestBedMode=1"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNumSoundDim80MhzOrBelow=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw80MhzBelow=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNdp4xEhtLtfAnd32UsGi=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyPartialBwUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs80MhzOrBelow=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhy20MhzOpStaRxNdpWiderBw=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyEhtDupIn6Ghz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNg16SuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNg16MuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyCodebookSize42SuFb=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyCodebookSize755MuFb=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyTrigSuBfFb=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyTrigCqiFb=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyPartialBwDlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyPsrBasedSr=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyEhtMuPpdu4xEhtLtf08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyRx1024Qam4096QamBel242Ru=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMaxNumOfSupportedEhtLtfs=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyMcs15=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNonOfdmaMuMimo80MhzBelow=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.Rnr6gOpClass137Allowed=0"`
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.RnrTbttMldNonZeroPad=0"`
+		fi
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.OperatingStandards='be'"`
+		sleep 4
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EnableEhtDebugMode=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMacEhtOmControl=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMacRestrictedTwt=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMacTrigTxopSharingMode1=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMacTrigTxopSharingMode2=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyTrigMuBfPartialBwFb=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMaxNc=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx09=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx09=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1011=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1011=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzRx1213=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMapLessOrEq80MHzTx1213=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMaxAmpduLenExpExt=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformer=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformee=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMacMaxMpduLen=11000"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyPpeThresholdsPresent=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMldTsfDiff=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyCommonNominalPktPad=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs09=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzTxMcs1213=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs1213=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzRxMcs09=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzTxMcs09=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzRxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzTxMcs1011=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzRxMcs1213=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap320MHzTxMcs1213=2"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhy320MHzIn6GHz=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.AdvertiseEcsaIe=1"`
+		if [ "$ap_type" == "testbed" ]; then
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.TestBedMode=1"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNumSoundDim80MhzOrBelow=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNumSoundingDim320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw80MhzBelow=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMuBeamformerBw320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNdp4xEhtLtfAnd32UsGi=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyPartialBwUlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs80MhzOrBelow=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyBeamformeeSs320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhy20MhzOpStaRxNdpWiderBw=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyEhtDupIn6Ghz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNg16SuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNg16MuFeedback=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyCodebookSize42SuFb=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyCodebookSize755MuFb=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyTrigSuBfFb=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyTrigCqiFb=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyPartialBwDlMuMimo=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyPsrBasedSr=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyEhtMuPpdu4xEhtLtf08UsGi=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyRx1024Qam4096QamBel242Ru=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMaxNumOfSupportedEhtLtfs=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyMcs15=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNonOfdmaMuMimo80MhzBelow=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw160Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyNonOfdmaUlMuMimoBw320Mhz=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.Rnr6gOpClass137Allowed=0"`
+			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.RnrTbttMldNonZeroPad=0"`
+		fi
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.commit()"`
+		sleep 7
+	fi
+}
+
+ap_load_vap_config()
+{
+	debug_print "Load VAP Configs for program $1"
+
+	if [ "$1" == "eht" ]; then
+		global_has_he=1
+		global_has_eht=1
+	elif [ "$1" == "he" ]; then
+		global_has_he=1
+	elif [ "$1" == "11n" ]; then
+		global_has_11n=1
+	elif [ "$1" == "pmf" ]; then
+		global_has_pmf=1
+	elif [ "$1" == "wpa3" ]; then
+		global_has_wpa3=1
+	elif [ "$1" == "wpa2" ]; then
+		global_has_wpa2=1
+	elif [ "$1" == "vht" ]; then
+		global_has_vht=1
+	elif [ "$1" == "mbo" ]; then
+		global_has_mbo=1
+	fi
+
+	#Set the VAP, Here AccessPoint and SSID Objects are required
+	if [ "$global_has_11n" == "1" -o "$global_has_pmf" == "1" -o "$global_has_wpa2" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		sleep 3
+	fi
+
+	if [ "$global_has_vht" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig='1 1 256'"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig='1 1 256'"`
+		sleep 3
+	fi
+
+	if [ "$global_has_mbo" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='MBORocks'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.WnmBssTransQueryAutoresp=1"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='MBORocks'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.WnmBssTransQueryAutoresp=1"`
+		sleep 3
+	fi
+
+	if [ "$global_has_wpa3" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		sleep 3
+	fi
+
+	if [ "$global_has_he" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.Set11nProtection=1"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig='1 1 64'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.Set11nProtection=1"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig='1 1 64'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.Set11nProtection=1"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig='1 1 64'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		sleep 3
+	fi
+
+	if [ "$global_has_eht" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.EmlCapabTransitionTimeout=4"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.MFPConfig='Required'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.ApProtectedKeepAliveRequired=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.MldMediumsyncPresent=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.MldMediumsyncDuration=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.MldMediumsyncOfdmedthresh=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.MldMediumsyncMaxtxop=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.MloT2lmSupport=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.SetAggrConfig='0 1 64'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.GroupMgmtCipher='BIP-GMAC-256'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.GroupCipher='GCMP-256'"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.EmlCapabTransitionTimeout=4"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.MFPConfig='Required'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.ApProtectedKeepAliveRequired=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.MldMediumsyncPresent=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.MldMediumsyncDuration=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.MldMediumsyncOfdmedthresh=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.MldMediumsyncMaxtxop=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.MloT2lmSupport=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.SetAggrConfig='0 1 64'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.GroupMgmtCipher='BIP-GMAC-256'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.GroupCipher='GCMP-256'"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.EmlCapabTransitionTimeout=4"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Security.MFPConfig='Required'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.ApProtectedKeepAliveRequired=0"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.MldMediumsyncPresent=0"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.MldMediumsyncDuration=0"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.MldMediumsyncOfdmedthresh=0"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.MldMediumsyncMaxtxop=0"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.MloT2lmSupport=0"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig='0 1 64'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.GroupMgmtCipher='BIP-GMAC-256'"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.RrmNeighRpt=1"`
+		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.GroupCipher='GCMP-256'"`
+		sleep 3
+	fi
+}
+
 ap_common_reset_default()
 {
-	if [ "$ucc_program" = "eht" ]; then
-		if [ "$1" = "eht" ] && [ -f $DEFAULT_DB_PATH/$ucc_program/factory ]; then
-    		debug_print "File:$DEFAULT_DB_PATH/$ucc_program/factory exist copy it"
-			ap_tmp=`eval md5sum $UCI_DB_PATH/wireless`
-			#Check the version of /etc/config/wireless in case of DUT/EHT
-			if [ "$ap_tmp" != "c99c41209a65fc0edd42302f09f159d3" ]; then
-		  		ap_tmp=`cp $DEFAULT_DB_PATH/$ucc_program/factory $UCI_DB_PATH/wireless`
-			fi
-		elif [ "$1" = "eht_testbed" ] && [ -f $DEFAULT_DB_PATH/eht_testbed/factory ]; then
-			debug_print "File:$DEFAULT_DB_PATH/${ucc_program}_testbed/factory exist copy it"
-			ap_tmp=`eval md5sum $UCI_DB_PATH/wireless`
-			#Check the version of /etc/config/wireless in case of Testbed/EHT_Testbed
-			if [ "$ap_tmp" != "e2ae5e31cb8fd71daeac559210921ee1" ]; then
-				ap_tmp=`cp $DEFAULT_DB_PATH/eht_testbed/factory $UCI_DB_PATH/wireless`
-			fi
-		else
-    		debug_print "File:$DEFAULT_DB_PATH/$ucc_program/factory not exist create it"
-       		if [ "$OS_NAME" = "UGW" ]; then
-        		ap_tmp=`eval /etc/init.d/servd stop`
-           		ap_tmp=`eval /etc/init.d/servd disable`
-       		fi
-       		$FACTORY_CMD -p $1
-       		[ "$1" = "eht" ] && ap_tmp=`cp $UCI_DB_PATH/wireless $DEFAULT_DB_PATH/$ucc_program/factory`
-			[ "$1" = "eht_testbed" ] && ap_tmp=`cp $UCI_DB_PATH/wireless $DEFAULT_DB_PATH/eht_testbed/factory`
-		fi	
-   	fi
-    
-	[ "$ucc_program" != "eht" ] && $FACTORY_CMD -p $1
-	#CGR interface doesnt restart, forceful restart
-    if [ "$OS_NAME" = "RDKB" ]; then
-    	ap_tmp=`systemctl restart systemd-netifd.service`
-		sleep 15
-    fi
+	ap_load_radio_config "$ucc_program" "$ucc_type"
+	ap_load_vap_config "$ucc_program"
+
+	if [ "$ucc_type" == "testbed" ]; then
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.TestBedMode=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.TestBedMode=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.TestBedMode=1"`
+	fi
+
 	debug_print "clearing all global_ variables"
 	local variables=`set | grep "^global_" | cut -d= -f1 | xargs echo `
 
@@ -9383,29 +9882,19 @@ ap_common_reset_default()
 		unset ${var}
 	done
 
-	if [ "$MODEL" != "AX11000" ] && [ "$MODEL" != "WAV700_AP" ] && [ "$OS_NAME" = "UGW" ]; then
-		chown rpcd:rpcd $UCI_DB_PATH/wireless
-		chmod +r $UCI_DB_PATH/wireless
-	fi
-
-	$UCI_CMD set wireless.default_radio$ap_uci_24g_idx.ssid="$1_ssid_24g"
-	$UCI_CMD set wireless.default_radio$ap_uci_5g_idx.ssid="$1_ssid_5g"
-	$UCI_CMD set wireless.default_radio$ap_uci_6g_idx.ssid="$1_ssid_6g"
+	# Setting the default SSIDs
+	ret=`ubus-cli "$CURRENT_5G_SSID_PATH.SSID=MXL_VAP5G"`
+	ret=`ubus-cli "$CURRENT_24G_SSID_PATH.SSID=MXL_VAP24G"`
+	ret=`ubus-cli "$CURRENT_6G_SSID_PATH.SSID=MXL_VAP6G"`
 
 	# Disable Dynamic EDCA for all radios, 6g is optional
-	$UCI_CMD set $ap_radio_24g_uci_path.dynamic_edca='0'
-	$UCI_CMD set $ap_radio_5g_uci_path.dynamic_edca='0'
-	[ -n "$ap_radio_6g_uci_path" ] && $UCI_CMD set $ap_radio_6g_uci_path.dynamic_edca='0'
+	ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.DynamicEdca=0"`
+	ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.DynamicEdca=0"`
+	ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.DynamicEdca=0"`
 
-	# Disable AutoCoC for all radios, 6g is optional
-	$UCI_CMD set $ap_radio_24g_uci_path.sCoCPower='0'
-	$UCI_CMD set $ap_radio_5g_uci_path.sCoCPower='0'
-	[ -n "$ap_radio_6g_uci_path" ] && $UCI_CMD set $ap_radio_6g_uci_path.sCoCPower='0'
-
-	if [ "$ucc_program" = "he" ] || [ "$ucc_program" = "eht" ]; then
-		randomize_macs
-	fi
-
+	# Disable AutoCoC for all radios
+	# By default it is disabled
+	
 	BASE_TAG_6G=""
 	BASE_TAG_5G=""
 	BASE_TAG_24G=""
@@ -9454,8 +9943,8 @@ ap_he_testbed_reset_default()
 
 ap_eht_testbed_reset_default()
 {
-        ap_common_reset_default eht_testbed
-    	ap_mbo_reset_default_var
+    ap_common_reset_default eht_testbed
+    ap_mbo_reset_default_var
 }
 
 
@@ -9491,9 +9980,6 @@ ap_reset_default()
 	ap_name="Maxlinear"
 	IFS=$ORIG_IFS
 	send_running
-
-	get_common_uci_path
-	get_interface_details $@
 
 	ucc_program=""
 	ucc_type=""
@@ -9533,18 +10019,9 @@ ap_reset_default()
 		send_invalid ",errorCode,610"
 		return
 	fi
+	
+	[ "$ap_runtime_id" = "" ] && restore_default_config
 
-	if [ "$MODEL" = "RDKB" ]; then
-		if [ $nof_interfaces -ge 3 ]; then
-			echo "y" > /tmp/y
-			ap_tmp=`overlay.sh create < /tmp/y`
-			# TODO: check if raio_map_file need to be copied
-			ap_tmp=`cp -u $DEFAULT_DB_PATH/cgr/radio_map_file $DEFAULT_DB_PATH/$ucc_program/`
-			ap_tmp=`cp -u $DEFAULT_DB_PATH/he/wireless_def_radio_6g $DEFAULT_DB_PATH/$ucc_program/`
-			ap_tmp=`cp -u $DEFAULT_DB_PATH/he/wireless_def_vap_db_6g $DEFAULT_DB_PATH/$ucc_program/`
-			ap_tmp=`cp $DEFAULT_DB_PATH/he/defaults $DEFAULT_DB_PATH/$ucc_program/`
-		fi
-	fi
 	if [ "$ucc_program" = "mbo" ]; then
 		ap_mbo_reset_default
 	elif [ "$ucc_program" = "he" ]; then
@@ -9564,22 +10041,14 @@ ap_reset_default()
 	elif [ "$ucc_program" = "pmf" ]; then
 		ap_pmf_reset_default
 	elif [ "$ucc_program" = "eht" ]; then
-		[ "$ap_runtime_id" = "" ] && force_ap_cleanup
-		if [ "$ucc_type" = "dut" ]; then
-			ap_eht_reset_default
-		else
-			ap_eht_testbed_reset_default
-		fi
-		if [ "$ap_runtime_id" != "" ]; then
-			if [ -e "/tmp/wlan_debug" ]; then
-				echo 8 cdebug=1 > /proc/net/mtlk_log/debug
+		if [ "$ap_runtime_id" = "" ] ; then
+			if [ "$ucc_type" = "dut" ]; then
+				ap_eht_reset_default
+			else
+				ap_eht_testbed_reset_default
 			fi
-			rm -rf ${TMP_PATH}/logread_logs.txt
-			logread -f > ${TMP_PATH}/logread_logs.txt &
-			killall hostapd
-			sleep 10
-			iw dev wlan0 iwlwav sFWRecovery 1 0 25 1 300
 		fi
+		iw dev wlan0 iwlwav sFWRecovery 1 0 25 1 300
 		rm -f $FORCE_EHT_FIXED_RATE_CFG_FILE_PATH
 	else
 		error_print "Unsupported ucc program - $ucc_program"
@@ -9626,6 +10095,8 @@ ap_reset_default()
 		#Disable synchronous link switch config in FW
 		iw dev wlan0 iwlwav sDoSimpleCLI 151 0
 	fi
+
+	sleep 3
 
 	send_complete
 }
@@ -9683,7 +10154,6 @@ ap_get_mac_address()
 	send_running
 
 	ap_non_tx_index=0
-	get_common_uci_path
 	get_interface_details $@
 
 	while [ "$1" != "" ]; do
@@ -9701,12 +10171,18 @@ ap_get_mac_address()
 			MLD_ID)
 				debug_print "set parameter ap_mld_id=$1"
 				ap_mld_id=$1
-				[ "$ap_mld_id" = "2" ] && CURRENT_6G_IFACE_UCI_PATH=$CURRENT_6G_IFACE_UCI_PATH_2
+				if [ "$ap_mld_id" = "2" ]; then
+					CURRENT_6G_SSID_PATH=$CURRENT_6G_SSID_PATH_2
+					CURRENT_6G_AP_PATH=$CURRENT_6G_AP_PATH_2
+				fi
 			;;
 			COHOSTEDBSSINDEX)
 				debug_print "set parameter ap_cohosted_bss_index=$1"
 				ap_cohosted_bss_index=$1
-				[ "$ap_cohosted_bss_index" = "2" ] && CURRENT_IFACE_UCI_PATH=$CURRENT_IFACE_UCI_PATH_2
+				if [ "$ap_cohosted_bss_index" = "2" ]; then
+					CURRENT_SSID_PATH=$CURRENT_SSID_PATH_2
+					CURRENT_AP_PATH=$CURRENT_AP_PATH_2
+				fi
 			;;
 			esac
 			shift
@@ -9714,39 +10190,31 @@ ap_get_mac_address()
 
 	if [ "$ap_interface" = "mld" ]; then
 		if [ "$ap_mld_id" = "" ]; then
-			ap_get_debug_hostap_conf=`grep 'ap_mld_mac' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			ap_mld_mac_address=`$UCI_CMD get $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-			ap_mld_mac_address=${ap_mld_mac_address##*=}
+			ap_mld_mac_address=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.MLO.ApMldMac?`
+			ap_mld_mac_address=`echo $ap_mld_mac_address | cut -d"=" -f2 | tr -d '"'`
 			if [ "$ap_mld_mac_address" = "0" ] || [ "$ap_mld_mac_address" = "" ]; then
-				ap_mld_mac_address=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-				ap_mld_mac_address=${ap_mld_mac_address##*=}
+				ap_mld_mac_address=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.MLO.ApMldMac?`
+				ap_mld_mac_address=`echo $ap_mld_mac_address | cut -d"=" -f2 | tr -d '"'`
 			fi
 		else
-			ap_get_debug_hostap_conf=`uci show wireless | grep debug_hostap | grep $CURRENT_6G_IFACE_UCI_PATH | grep ap_mld_mac | cut -d"." -f3 | cut -d"=" -f1`
-			ap_mld_mac_address=`$UCI_CMD get $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf`
-			ap_mld_mac_address=${ap_mld_mac_address##*=}
+			ap_mld_mac_address=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.MLO.ApMldMac?`
+			ap_mld_mac_address=`echo $ap_mld_mac_address | cut -d"=" -f2 | tr -d '"'`
 		fi
 		send_complete ",AP-MLD mac,$ap_mld_mac_address"
 	else
-		if [ "$ap_cohosted_bss_index" = "" ]; then
-			ap_mac_index="${CURRENT_IFACE_UCI_PATH/wireless.default_radio}"
-			ap_mac_index=$((ap_mac_index+ap_non_tx_index))
-
-			ap_mac=`$UCI_CMD get wireless.default_radio$ap_mac_index.macaddr`
-		else
-			ap_mac=`$UCI_CMD get $CURRENT_IFACE_UCI_PATH.macaddr`
-		fi
+		ap_mac=`ubus-cli $CURRENT_SSID_PATH.BSSID?`
+		ap_mac=`echo $ap_mac | cut -d"=" -f2 | tr -d '"'`
 		send_complete ",mac,$ap_mac"
 	fi
 }
 
 ap_get_parameter()
 {
-        ap_name="Maxlinear"
-        IFS=$ORIG_IFS
-        send_running
-        get_common_uci_path
-        while [ "$1" != "" ]; do
+		ap_name="Maxlinear"
+		IFS=$ORIG_IFS
+		send_running
+		get_interface_details $@
+		while [ "$1" != "" ]; do
 			# for upper case only
 			upper "$1" token
 			shift
@@ -9767,21 +10235,21 @@ ap_get_parameter()
 
 				if [ "$param" = "pmk" ]; then
 					if [ "$ucc_program" = "eht" ]; then
-						local vaps=`uci show wireless | grep ifname | grep ${CURRENT_5G_WLAN_NAME/.0} | cut -d"=" -f2 |grep "\." | tr -d "'"`
+						local vaps=`ifconfig | grep ${CURRENT_5G_WLAN_NAME/.0} | cut -d" " -f1 |grep "\."`
 						for interface_name in $vaps; do
 							pmk=`eval $HOSTAPD_CLI_CMD -i$interface_name pmk | grep $sta_mac_addr | cut -d" " -f3`
 							debug_print $pmk
 							[ -n "$pmk" ] && break
 						done
 						if [ -z "$pmk" ]; then
-							local vaps=`uci show wireless | grep ifname | grep ${CURRENT_6G_WLAN_NAME/.0} | cut -d"=" -f2 |grep "\." | tr -d "'"`
+							local vaps=`ifconfig | grep ${CURRENT_6G_WLAN_NAME/.0} | cut -d" " -f1 |grep "\."`
 							for interface_name in $vaps; do
 								pmk=`eval $HOSTAPD_CLI_CMD -i$interface_name pmk | grep $sta_mac_addr | cut -d" " -f3`
 								debug_print $pmk
 								[ -n "$pmk" ] && break
 							done
 							if [ -z "$pmk" ]; then
-								vaps=`uci show wireless | grep ifname | grep ${CURRENT_24G_WLAN_NAME/.0} | cut -d"=" -f2 |grep "\." | tr -d "'"`
+								vaps=`ifconfig | grep ${CURRENT_24G_WLAN_NAME/.0} | cut -d" " -f1 |grep "\."`
 								for interface_name in $vaps; do
 									pmk=`eval $HOSTAPD_CLI_CMD -i$interface_name pmk | grep $sta_mac_addr | cut -d" " -f3`
 									debug_print $pmk
@@ -9799,7 +10267,7 @@ ap_get_parameter()
 						while [ $i -le $count ]
 						do
 							wlan_interface_name=$CURRENT_WLAN_NAME.$i
-							local vaps=`uci show wireless | grep ifname | grep $wlan_interface_name | cut -d"=" -f2 |grep "\." | tr -d "'"`
+							local vaps=`ifconfig | grep $wlan_interface_name | cut -d" " -f1 |grep "\."`
 							for interface_name in $vaps; do
 								upper "$sta_mac_addr" sta_mac_addr_upper
 								is_sta_connected=`dwpal_cli $wlan_interface_name peerlist | grep $sta_mac_addr_upper`
@@ -9813,15 +10281,15 @@ ap_get_parameter()
 						done
 					fi
 				fi
-            ;;
-            esac
-            shift
-        done
-        if [ -n "$pmk" ]; then
-            send_complete ",pmk,$pmk"
-        else
-            send_error ",errorCode,120"
-        fi
+			;;
+			esac
+			shift
+		done
+		if [ -n "$pmk" ]; then
+				send_complete ",pmk,$pmk"
+		else
+			send_error ",errorCode,120"
+		fi
 }
 
 dev_configure_ie()
@@ -9957,10 +10425,10 @@ sp_check_ldpc_support()
 	HOSTAPD_CLI_ALL_STA_FILE="/tmp/sigma-hostapd-cli-all-sta-conf"
 	LDPC_SUPPORT_FILE="/tmp/sigma-ldpc-support-conf"
 	rm -f $HOSTAPD_CLI_ALL_STA_FILE $LDPC_SUPPORT_FILE
-	eval $HOSTAPD_CLI_CMD -i${interface_name} all_sta $interface_name > $HOSTAPD_CLI_ALL_STA_FILE
+	eval $HOSTAPD_CLI_CMD -i${interface_name} all_sta > $HOSTAPD_CLI_ALL_STA_FILE
 	while [ $? -ne 0 ]; do
 		sleep 3
-		eval $HOSTAPD_CLI_CMD -i${interface_name} all_sta $interface_name > $HOSTAPD_CLI_ALL_STA_FILE
+		eval $HOSTAPD_CLI_CMD -i${interface_name} all_sta > $HOSTAPD_CLI_ALL_STA_FILE
 	done 
 	current_aid=0
 	while read -r line || [[ -n "$line" ]]
@@ -10017,8 +10485,7 @@ sp_set_plan_tf_length()
 
 	if [ -z $ap_mu_tf_len ]; then
 		ap_mu_tf_len=2914
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		current_tf_length=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
+		current_tf_length=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx`
 #		current_tf_length=`get_plan_tf_length $interface_name` #WaveSPRcrComTfLength ==> rcr_com_tf_length
 	else
 		current_tf_length=$ap_mu_tf_len
@@ -10176,8 +10643,8 @@ get_sta_aid_idx_sorted_list()
 	local SMD_AID_SS_FILE_SORTED="/tmp/sigma-smd-aid-ss-conf-sorted"
 
 	[ -z "$1" ] && error_print "get_sta_aid_idx_sorted_list: ERROR: Missing interface_name" && echo -1 && return
-        radio=`echo "$1" | cut -d"." -f1`
-        vaps=`uci show wireless | grep ifname | grep $radio | cut -d"=" -f2 |grep "\." | tr -d "'"`
+    radio=`echo "$1" | cut -d"." -f1`
+    vaps=`ifconfig | grep $radio | cut -d" " -f1 | grep "\."`
 
 	rm -f $SMD_AID_SS_FILE $SMD_AID_SS_FILE_SORTED
 
@@ -10257,9 +10724,11 @@ get_sid_for_wav700()
 {
 	debug_print "$@"
 	local aid_in=$1
+	local CURRENT_WLAN_NAME=$2
 	local sid_out=512
 
-	vaps=`uci show wireless | grep ifname | grep $2 | cut -d"=" -f2 |grep "\." | tr -d "'"`
+	#vaps=`uci show wireless | grep ifname | grep $2 | cut -d"=" -f2 |grep "\." | tr -d "'"`
+	vaps=`ifconfig | grep $CURRENT_WLAN_NAME | cut -d" " -f1 | grep "\."`
 	for interface_name in $vaps
 	do
 		while read -r line || [[ -n "$line" ]]
@@ -10331,12 +10800,11 @@ update_nss_in_plan()
 		return
 	fi	
 	ap_nss=$((ap_nss-1))
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-	ap_sp_rate=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_usr_ul_psdu_rate_per_usp_idx`
+	ap_sp_rate=`get_index_from_db "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx`
 	ap_sp_rate_mcs=$((ap_sp_rate%16))
 	ap_nss=$((ap_nss*16))
 	let ap_nss_mcs_val=$ap_nss+$ap_sp_rate_mcs
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=${ap_nss_mcs_val} x$dl_usr_psdu_rate_per_usp_idx=${ap_nss_mcs_val} x$rcr_tf_usr_psdu_rate_idx=${ap_nss_mcs_val}
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=${ap_nss_mcs_val} x$dl_usr_psdu_rate_per_usp_idx=${ap_nss_mcs_val} x$rcr_tf_usr_psdu_rate_idx=${ap_nss_mcs_val}
 }
 
 send_plan_for_1_users(){
@@ -10346,15 +10814,15 @@ send_plan_for_1_users(){
 	dl_sub_band2 dl_start_ru2 dl_ru_size2 ul_sub_band2 ul_start_ru2 ul_ru_size2 \
 	mu_type sp_enable_value tc_name CURRENT_RADIO_UCI_PATH CURRENT_WLAN_NAME glob_ssid ldpc_tmp_1
 	
-	CURRENT_RADIO_UCI_PATH=$3
+	CURRENT_RADIO_PATH=$3
 	CURRENT_WLAN_NAME=$1
 	glob_ssid=$4
-	debug_print "send_plan_for_1_users ---> get_index_from_db CURRENT_RADIO_UCI_PATH=$CURRENT_RADIO_UCI_PATH"
+	CURRENT_IFACE_NAME=$6
+	debug_print "send_plan_for_1_users ---> CURRENT_IFACE_NAME=$CURRENT_IFACE_NAME"
 	
 	interface_name=$1
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
-	mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_mu_type_idx`
+	start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
+	mu_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_mu_type_idx`
 
 	info_print "SMD: send_plan_for_1_user on $interface_name" 
 	
@@ -10366,8 +10834,8 @@ send_plan_for_1_users(){
 		sp_enable_value=1
 	fi
 	#set operation_mode and dl_com_num_of_participating_stations into sMuStaticPlann_common
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=$sp_enable_value x$dl_com_num_of_participating_stations_idx=1
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$txop_com_start_bw_limit_idx=$start_bw_limit
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$operation_mode_idx=$sp_enable_value x$dl_com_num_of_participating_stations_idx=1
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx=$start_bw_limit
 	
 	# update 1 user plan according to BW.
 	# 0-20MHz, 1-40MHz, 2-80MHz, 3-160MHz 4-320MHz(both 320_1MHz and 320_2MHz)
@@ -10398,18 +10866,17 @@ send_plan_for_1_users(){
 	usr_index=1
 	local tmp_param tmp_val
 	tmp_param="dl_sub_band$usr_index";eval tmp_val=\$$tmp_param
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`	
-	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_sub_band_per_usp_idx=$tmp_val
+	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_sub_band_per_usp_idx=$tmp_val
 	tmp_param="dl_start_ru$usr_index";eval tmp_val=\$$tmp_param
-	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_start_ru_per_usp_idx=$tmp_val
+	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_start_ru_per_usp_idx=$tmp_val
 	tmp_param="dl_ru_size$usr_index";eval tmp_val=\$$tmp_param
-	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ru_size_per_usp_idx=$tmp_val
+	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ru_size_per_usp_idx=$tmp_val
 	tmp_param="ul_sub_band$usr_index";eval tmp_val=\$$tmp_param
-	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_sub_band_idx=$tmp_val
+	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_sub_band_idx=$tmp_val
 	tmp_param="ul_start_ru$usr_index";eval tmp_val=\$$tmp_param	
-	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_start_ru_idx=$tmp_val
+	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_start_ru_idx=$tmp_val
 	tmp_param="ul_ru_size$usr_index";eval tmp_val=\$$tmp_param
-	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_ru_size_idx=$tmp_val
+	[ -n "$tmp_val" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ru_size_idx=$tmp_val
 	
 	## update ldpc according to STA ##
 	sp_check_ldpc_support $5
@@ -10419,37 +10886,32 @@ send_plan_for_1_users(){
 	sortedFile="/tmp/sigma-sorted-sta-file"
 	rm -f $sortFile $sortedFile
 
-	aid_index=`$HOSTAPD_CLI_CMD -i$5 all_sta $5 | grep aid=`
+	aid_index=`$HOSTAPD_CLI_CMD -i$5 all_sta | grep aid=`
 	aid_index=${aid_index##*=}
 	aid_index=`convert_aid_for_wav700 $aid_index`
 	# Incase multibss is enabled on the interface (for e.g. 6GHz), AID offset needs to be accounted before deriving SID
-	if [ "$MODEL" != "WAV700_AP" ]; then
-		local band=`uci show $CURRENT_RADIO_UCI_PATH | grep band | head -n 1 | cut -d "=" -f2 | tr -d "'"`
-		if [ "$band" = "6GHz" ]; then
-			[ $aid_index -gt 64 ] && aid_index=$((aid_index-64))
-		fi
-	fi
+
 	if [ "$ap_type" != "EHT" ]; then
 		ldpc_tmp_1="ldpc_${aid_index}"
 		ldpc_support=`eval 'echo $'$ldpc_tmp_1`
-		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_ldpc_idx=$ldpc_support
+		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ldpc_support
 	fi	
 	[ $aid_index -gt 0 ] && let sta_index=$aid_index-1
 
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_usp_station_indexes_idx=$sta_index
-	$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
-		
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx=$sta_index
+	echo "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" >> $sortFile
+
 	sort -n $sortFile > $sortedFile
 
 	while read -r line; do
-		static_plan_config="$(echo $line | sed "s/sMuStaticPlannUser[0-9]//g") ${static_plan_config}"
+		eval values=\${$line}
+		static_plan_config="${values} ${static_plan_config}"
 	done < $sortedFile
 
 	# Change the length according to maximum NSS value of the connected STAs.
 	[ "$mu_type" = "0" ] && ap_mu_tf_len=`sp_set_plan_tf_length $interface_name $ap_mu_tf_len`
 	
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	dl_com_number_of_phase_repetitions=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x7`
+	dl_com_number_of_phase_repetitions=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x7`
 	# if dl_com_number_of_phase_repetitions is configured -> twt_respsupport is enabled and ap_mu_tf_len="1486
 	if [ "$dl_com_number_of_phase_repetitions" = "2" ]; then
 		ap_mu_tf_len="1486"
@@ -10461,11 +10923,11 @@ send_plan_for_1_users(){
 		ap_mu_tf_len="610"
 	fi
 
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_length_idx=$ap_mu_tf_len
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx=$ap_mu_tf_len
 
-	uci_commit_wireless
-	static_plan_config="$($UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' | sed 's/sMuStaticPlann_common//g' | sed 's/false/0/g') ${static_plan_config}"
+	line="PLAN_COMMON_${CURRENT_IFACE_NAME}"
+	eval values=\${$line}
+	static_plan_config="${values} ${static_plan_config}"
 
 	[ "$MODEL" = "WAV700_AP" ] && static_plan_config=`update_sid_in_static_plan "${static_plan_config}" $CURRENT_WLAN_NAME 1`
 
@@ -10492,15 +10954,15 @@ send_plan_for_2_users()
 		splanconfigRUsorted
 	fi
 
-	CURRENT_RADIO_UCI_PATH=$3
+	CURRENT_RADIO_PATH=$3
 	CURRENT_WLAN_NAME=$1
 	glob_ssid=$4
+	CURRENT_IFACE_NAME=$6
 	debug_print "send_plan_for_2_users ---> get_index_from_db CURRENT_RADIO_UCI_PATH=$CURRENT_RADIO_UCI_PATH"
 
 	interface_name=$1
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
-	mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_mu_type_idx`
+	start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
+	mu_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_mu_type_idx`
 
 	info_print "SMD: send_plan_for_2_user on $interface_name" #info_print
 
@@ -10511,8 +10973,7 @@ send_plan_for_2_users()
 	else
 		sp_enable_value=1
 	fi
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=$sp_enable_value x$dl_com_num_of_participating_stations_idx=2
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$operation_mode_idx=$sp_enable_value x$dl_com_num_of_participating_stations_idx=2
 
 	# update 2 user plan according to BW, If the MRU Alloctones are not provided in the CAPI.
 	if [ "$ap_mrualloctones" = "" ]; then
@@ -10611,30 +11072,29 @@ send_plan_for_2_users()
 	# update per-user params in DB
 	for usr_index in 1 2
 	do
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`	
 		tmp_param="dl_sub_band$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_sub_band_per_usp_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_sub_band_per_usp_idx=$tmp_val
 
 		tmp_param="dl_start_ru$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_start_ru_per_usp_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_start_ru_per_usp_idx=$tmp_val
 
 		tmp_param="ul_sub_band$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_sub_band_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_sub_band_idx=$tmp_val
 
 		tmp_param="ul_start_ru$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_start_ru_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_start_ru_idx=$tmp_val
 
 		tmp_param="ul_ru_size$usr_index";eval tmp_val=\$$tmp_param
-		[ -z "$glob_ap_usrinfo_ru_alloc" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_ru_size_idx=$tmp_val
+		[ -z "$glob_ap_usrinfo_ru_alloc" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ru_size_idx=$tmp_val
 
 		if [ "$global_ap_mimo" != "ul" ]; then
 			tmp_param="ul_psdu_rate_per_usp$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=$tmp_val
 		elif [ "$global_ap_mimo" = "ul" ] && [ "$ucc_type" = "testbed" ]; then
 			# Hard-code MCS to 5 for STAUT UL MIMO data traffic phase. This is a system limitation until the feature will be stabilized for higher performance
 			debug_print "Setting UL MIMO MCS to 5"
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=5
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_target_rssi_idx=60
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=5
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_target_rssi_idx=60
 		fi
 
 		if [ "$ucc_program" = "eht" ] && [ "$mu_type" = "1" ]; then
@@ -10642,35 +11102,34 @@ send_plan_for_2_users()
 			if [ "$ap_sequence_type" -eq 4 -o "$ap_sequence_type" -eq 10 ]; then #Hardcode MCS to 6 and NSS to 2 for MU-RTS and BSRP frame transmission
 				spr_cr_tf_usr_psdu_rate1=22
 				spr_cr_tf_usr_psdu_rate2=22
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=22
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_psdu_rate_per_usp_idx=22
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_target_rssi_idx=64
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=22
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_psdu_rate_per_usp_idx=22
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_target_rssi_idx=64
 			else
 				spr_cr_tf_usr_psdu_rate1=6
 				spr_cr_tf_usr_psdu_rate2=6
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=6
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_psdu_rate_per_usp_idx=6
-				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_target_rssi_idx=64
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=6
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_psdu_rate_per_usp_idx=6
+				Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_target_rssi_idx=64
 			fi
 		fi
 
 		tmp_param="spr_cr_tf_usr_psdu_rate$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_psdu_rate_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_psdu_rate_idx=$tmp_val
 
 		if [ $is_set_low_ru_size = "1" ] && [ "$ap_mrualloctones" = "" ]; then
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ru_size_per_usp_idx=2
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ru_size_per_usp_idx=2
 		else
 			debug_print "ru_size_static-plan_for2"
 			tmp_param="dl_ru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ru_size_per_usp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ru_size_per_usp_idx=$tmp_val
 		fi
 		if [ "$ap_mrualloctones" != "" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			tmp_param="dl_mru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannMRUUser${usr_index} x$dl_mru_perusp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "MRU_PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_mru_perusp_idx=$tmp_val
 
 			tmp_param="ul_mru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannMRUUser${usr_index} x$ul_mru_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "MRU_PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$ul_mru_idx=$tmp_val
 		fi
 	done
 
@@ -10696,49 +11155,39 @@ send_plan_for_2_users()
 		if [ "$glob_ap_ack_policy_mac" != "" ] && [ $ap_sta_id -gt 0 ]; then
 			#store the primary sta id in user 1
 			debug_print "store the primary sta id in user 1"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser1 x${dl_usr_usp_station_indexes_idx}=${ap_sta_id}
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_1_USER_${CURRENT_IFACE_NAME}" x${dl_usr_usp_station_indexes_idx}=${ap_sta_id}
+			echo "PLAN_FOR_1_USER_${CURRENT_IFACE_NAME}" >> $sortFile
 
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser2' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
+			echo "PLAN_FOR_2_USER_${CURRENT_IFACE_NAME}" >> $sortFile
 			if [ "$ap_mrualloctones" != "" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $MRUFile
-
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser2' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $MRUFile
+				echo "MRU_PLAN_FOR_1_USER_${CURRENT_IFACE_NAME}" >> $MRUFile
+				echo "MRU_PLAN_FOR_2_USER_${CURRENT_IFACE_NAME}" >> $MRUFile
 			fi
 			break
-		else
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u` 
-			[ -z "$glob_ap_sta_aid" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$dl_usr_usp_station_indexes_idx=$sta_index
+		else 
+			[ -z "$glob_ap_sta_aid" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx=$sta_index
 			[ "$ap_type" = "EHT" ] && [ "$ap_num_ss" != "" -a "$ap_num_ss_mac" != "" ] && update_nss_in_plan $ap_aid_index $sta_index
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
+			echo "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $sortFile
 
 			if [ "$ap_mrualloctones" != "" ]; then
-				ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-				$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $MRUFile
+				echo "MRU_PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $MRUFile
 			fi
 		fi
 		ldpc_tmp_1="ldpc_${aid_index}"
 		ldpc_support=`eval 'echo $'$ldpc_tmp_1`
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u` 
-		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$rcr_tf_usr_ldpc_idx=$ldpc_support
+		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ldpc_support
 		
 		if [ "$glob_ap_trigger_coding" = "BCC" ]; then
 			ap_bcc_ldpc_int=0
 		elif [ "$glob_ap_trigger_coding" = "LDPC" ]; then
 			ap_bcc_ldpc_int=1
 		fi
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
 	done
 
 	# re-update user config in-case both users ended up with same dl_usr_usp_station_indexes_idx
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser1' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-	user1_sid=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x0`
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser2' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-	user2_sid=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x0`
+	user1_sid=`get_index_from_db "PLAN_FOR_1_USER_${CURRENT_IFACE_NAME}" x0`
+	user2_sid=`get_index_from_db "PLAN_FOR_2_USER_${CURRENT_IFACE_NAME}" x0`
 
 	if [ "$user1_sid" = "$user2_sid" ]; then
 		debug_print "same sid detected for users, fixing it"
@@ -10749,15 +11198,12 @@ send_plan_for_2_users()
 			user2_sid=$((user1_sid-1))
 		fi
 		# User2 config already fetched before the if block
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser2 x$dl_usr_usp_station_indexes_idx=$user2_sid
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_2_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx=$user2_sid
 		rm -f $sortFile $sortedFile $MRUFile
 		for ap_aid_index in 1 2
 		do
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $MRUFile
-
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
+			echo "MRU_PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $MRUFile
+			echo "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $sortFile
 		done
 	fi
 
@@ -10774,34 +11220,35 @@ send_plan_for_2_users()
 	fi
 	while read -r line; do
 		debug_print "static_plan_config"
-		static_plan_config="${static_plan_config} ${line}"
+		eval values=\${$line}
+		static_plan_config="${static_plan_config} ${values}"
 	done < $sortedFile
 
 	if [ "$ap_mrualloctones" != "" ]; then
 		debug_print "remove sMuStaticPlannMRUUser from sortPlan"
-		sed -i 's/sMuStaticPlannMRUUser[0-9]//g' $MRUFile
 
 		while read -r line; do
 			debug_print "static_plan_config"
-			static_plan_config="${static_plan_config} ${line}"
+			eval values=\${$line}
+			static_plan_config="${static_plan_config} ${values}"
 		done < $MRUFile
 	fi
 	
 	# Change the length according to maximum NSS value of the connected STAs.
 	[ "$mu_type" = "0" ] && ap_mu_tf_len=`sp_set_plan_tf_length $5 $ap_mu_tf_len`
 
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
 	# TWT test
 	band=`get_radio_band $interface_name`
 	if [ "$tc_name" = "4.56.1" ]; then
 		## WLANRTSYS-18156 set dl_com_number_of_phase_repetitions=3 and from PF8 Sigma: rcr_com_tf_length=1486
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${rcr_com_tf_length_idx}=1486
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=3
-		ap_mu_tf_len=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$rcr_com_tf_length_idx`
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${rcr_com_tf_length_idx}=1486
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=3
+		ap_mu_tf_len=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx`
 	fi
 
-	uci_commit_wireless
-	static_plan_config="$($UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' | sed 's/sMuStaticPlann_common//g' | sed 's/false/0/g') ${static_plan_config}"
+	line="PLAN_COMMON_${CURRENT_IFACE_NAME}"
+	eval values=\${$line}
+	static_plan_config="$values ${static_plan_config}"
 	debug_print "CREATE COMMAND: Args $static_plan_config"
 	
 	info_print "plan for 2 user Ru not sorted: iw dev $interface_name iwlwav sMuStatPlanCfg $static_plan_config"
@@ -10843,20 +11290,19 @@ send_plan_for_3_users()
 	splanconfigRUsorted
 
 
-	CURRENT_RADIO_UCI_PATH=$3
+	CURRENT_RADIO_PATH=$3
 	CURRENT_WLAN_NAME=$1
 	glob_ssid=$4
-	debug_print "send_plan_for_3_users ---> get_index_from_db CURRENT_RADIO_UCI_PATH=$CURRENT_RADIO_UCI_PATH"
+	CURRENT_IFACE_NAME=$6
+	debug_print "send_plan_for_3_users ---> CURRENT_IFACE_NAME=$CURRENT_IFACE_NAME"
 
 	interface_name=$1
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
-	mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_mu_type_idx`
+	start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
+	mu_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_mu_type_idx`
 
 	info_print "SMD: send_plan_for_3_user on $interface_name" #info_print
 
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=1 x$dl_com_num_of_participating_stations_idx=3
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$operation_mode_idx=1 x$dl_com_num_of_participating_stations_idx=3
 
 	# update 3 user plan according to BW.
 	# 0-20MHz, 1-40MHz, 2-80MHz, 3-160MHz 4-320MHz(both 320_1MHz and 320_2MHz)
@@ -10944,47 +11390,44 @@ send_plan_for_3_users()
 
 	## WLANRTSYS-12035
 	if [ $dl_ru_size1 -lt 2 ]; then
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
 	else
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
 	fi
 
 	# update per-user params in DB
 	aid_idx_sorted_list=`get_sta_aid_idx_sorted_list $5`
 	for usr_index in 1 2 3
 	do
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 		#Do not update DL/UL sub-band in-case puncture configuration was done prior to final call to configure plan
 		if [ "$global_ap_preamblepunctmode" = "" ] && [ "$global_ap_preamblepunctchannel" = "" ]; then
 			tmp_param="dl_sub_band$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_sub_band_per_usp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_sub_band_per_usp_idx=$tmp_val
 			tmp_param="ul_sub_band$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_sub_band_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_sub_band_idx=$tmp_val
 		fi
 		tmp_param="dl_start_ru$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_start_ru_per_usp_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_start_ru_per_usp_idx=$tmp_val
 		tmp_param="ul_start_ru$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_start_ru_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_start_ru_idx=$tmp_val
 		debug_print "glob_ap_usrinfo_ru_alloc_SP=$glob_ap_usrinfo_ru_alloc"
 		tmp_param="ul_ru_size$usr_index";eval tmp_val=\$$tmp_param
-		[ -z "$glob_ap_usrinfo_ru_alloc" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_ru_size_idx=$tmp_val
+		[ -z "$glob_ap_usrinfo_ru_alloc" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ru_size_idx=$tmp_val
 
 		debug_print "ap_rualloctones_plan2=$ap_rualloctones ap_txbandwidth=$ap_txbandwidth"
 		if [ $is_set_low_ru_size = "1" ]; then
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index  x$dl_usr_ru_size_per_usp_idx=2
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}"  x$dl_usr_ru_size_per_usp_idx=2
 		elif [ "$glob_ap_rualloctones" = "" ] || [ "$glob_ap_txbandwidth" = "" ]; then
 			tmp_param="dl_ru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ru_size_per_usp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ru_size_per_usp_idx=$tmp_val
 		fi
 
 		if [ "$global_emlsr_tb_ul_ofdma" = "1" ] && [ "$mu_type" = "0" ]; then
 			#update tf_padding=6 (829 Bytes)
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$tf_usr_tf_padding_idx=6
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$tf_usr_tf_padding_idx=6
 			#update UL NSS=1 and MCS=9
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=9
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_psdu_rate_idx=9
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=9
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_psdu_rate_idx=9
 		fi
 	done
 
@@ -11000,48 +11443,48 @@ send_plan_for_3_users()
 		aid_index=`aid_idx_out_of_list_get "${aid_idx_sorted_list}" "${ap_aid_index}"`
 		aid_index=`echo ${aid_index//[!0-9]/}`
 		[ $aid_index -gt 0 ] && sta_index=$((aid_index-1))
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-		[ -z "$glob_ap_sta_aid" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$dl_usr_usp_station_indexes_idx=$sta_index
-		$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
+		[ -z "$glob_ap_sta_aid" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx=$sta_index
+		echo "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $sortFile
 		ldpc_tmp_1="ldpc_${aid_index}"
 		ldpc_support=`eval 'echo $'$ldpc_tmp_1`
-		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
+		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
 
 		if [ "$glob_ap_trigger_coding" = "BCC" ]; then
 			ap_bcc_ldpc_int=0
 		elif [ "$glob_ap_trigger_coding" = "LDPC" ]; then
 			ap_bcc_ldpc_int=1
 		fi
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
 
 	done
 
 	if [ "$MODEL" = "WAV700_AP" ]; then
 		#TODO : Check for no regression in legacy through thorough testing
 		#sort -k option is not supported !!!
-		sed -i 's/sMuStaticPlannUser[0-9]//g' $sortFile
 		sort -n $sortFile > $sortedFile
 		while read -r line; do
-			static_plan_config="${static_plan_config} ${line}"
+			eval values=\${$line}
+			static_plan_config="${static_plan_config} ${values}"
 		done < $sortedFile
 		rm -f $sortFile $sortedFile
 	else
 		sort -k2 -n $sortFile > $sortedFile
 		while read -r line; do
-			static_plan_config="$(echo $line | sed "s/sMuStaticPlannUser[0-9]//g") ${static_plan_config}"
+			eval values=\${$line}
+			static_plan_config="${values} ${static_plan_config}"
 		done < $sortedFile
 		rm -f $sortFile $sortedFile
 	fi
 
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
 	if [ "$global_emlsr_tb_ul_ofdma" = "1" ] && [ "$mu_type" = "0" ]; then
 		#update PhaseRepetion=0 & muSequenceType=7
-		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
-		set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=7
+		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=0
+		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=7
 	fi
 
-	uci_commit_wireless
-	static_plan_config="$($UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' | sed 's/sMuStaticPlann_common//g' | sed 's/false/0/g') ${static_plan_config}"
+	line="PLAN_COMMON_${CURRENT_IFACE_NAME}"
+	eval values=\${$line}
+	static_plan_config="$values ${static_plan_config}"
 	debug_print "CREATE COMMAND: Args $static_plan_config"
 
 	info_print "plan for 3 user Ru not sorted: iw dev $interface_name iwlwav sMuStatPlanCfg $static_plan_config"
@@ -11087,12 +11530,12 @@ send_plan_for_4_users()
 	CURRENT_RADIO_UCI_PATH=$3
 	CURRENT_WLAN_NAME=$1
 	glob_ssid=$4
-	debug_print "send_plan_for_4_users ---> get_index_from_db CURRENT_RADIO_UCI_PATH=$CURRENT_RADIO_UCI_PATH"
+	CURRENT_IFACE_NAME=$6
+	debug_print "send_plan_for_4_users ---> CURRENT_IFACE_NAME=$CURRENT_IFACE_NAME"
 	
 	interface_name=$1
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	start_bw_limit=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$txop_com_start_bw_limit_idx` #x3
-	mu_type=`get_index_from_db $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx x$dl_com_mu_type_idx`
+	start_bw_limit=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$txop_com_start_bw_limit_idx` #x3
+	mu_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_mu_type_idx`
 
 	info_print "SMD: send_plan_for_4_user on $interface_name" #info_print
 
@@ -11103,8 +11546,7 @@ send_plan_for_4_users()
 	else
 		sp_enable_value=1
 	fi
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=$sp_enable_value x$dl_com_num_of_participating_stations_idx=4
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$operation_mode_idx=$sp_enable_value x$dl_com_num_of_participating_stations_idx=4
 	
 	# update 4 user plan according to BW, if the RU Alloctones are not configured from the CAPI.
 	if [ "$ap_mrualloctones" = "" ]; then
@@ -11204,53 +11646,49 @@ send_plan_for_4_users()
 	
 	## WLANRTSYS-12035
 	if [ $dl_ru_size1 -lt 2 ]; then
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2300
 	else
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_maximum_ppdu_transmission_time_limit_idx}=2700
 	fi
 
 	# update per-user params in DB
 	aid_idx_sorted_list=`get_sta_aid_idx_sorted_list $5`
 	for usr_index in 1 2 3 4
 	do
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 		tmp_param="dl_sub_band$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_sub_band_per_usp_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_sub_band_per_usp_idx=$tmp_val
 		tmp_param="dl_start_ru$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_start_ru_per_usp_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_start_ru_per_usp_idx=$tmp_val
 		tmp_param="ul_sub_band$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_sub_band_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_sub_band_idx=$tmp_val
 		tmp_param="ul_start_ru$usr_index";eval tmp_val=\$$tmp_param
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_start_ru_idx=$tmp_val
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_start_ru_idx=$tmp_val
 		debug_print "glob_ap_usrinfo_ru_alloc_SP=$glob_ap_usrinfo_ru_alloc"
 		tmp_param="ul_ru_size$usr_index";eval tmp_val=\$$tmp_param
-		[ -z "$glob_ap_usrinfo_ru_alloc" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_ru_size_idx=$tmp_val
+		[ -z "$glob_ap_usrinfo_ru_alloc" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ru_size_idx=$tmp_val
 		
 		debug_print "ap_rualloctones_plan2=$ap_rualloctones ap_txbandwidth=$ap_txbandwidth"
 		if [ $is_set_low_ru_size = "1" ] && [ "$ap_mrualloctones" = "" ]; then
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index  x$dl_usr_ru_size_per_usp_idx=2
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}"  x$dl_usr_ru_size_per_usp_idx=2
 		elif [ "$glob_ap_rualloctones" = "" ] || [ "$glob_ap_txbandwidth" = "" ]; then
 			tmp_param="dl_ru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ru_size_per_usp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ru_size_per_usp_idx=$tmp_val
 		fi
 
 		if [ "$global_emlsr_tb_ul_ofdma" = "1" ] && [ "$mu_type" = "0" ]; then
 			#update tf_padding=6 (829 Bytes)
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$tf_usr_tf_padding_idx=6
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$tf_usr_tf_padding_idx=6
 			#update UL NSS=1 and MCS=9
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$dl_usr_ul_psdu_rate_per_usp_idx=9
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser$usr_index x$rcr_tf_usr_psdu_rate_idx=9
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_ul_psdu_rate_per_usp_idx=9
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_psdu_rate_idx=9
 		fi
 
 		if [ "$ap_mrualloctones" != "" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser'$usr_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
 			tmp_param="dl_mru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannMRUUser${usr_index} x$dl_mru_perusp_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "MRU_PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$dl_mru_perusp_idx=$tmp_val
 
 			tmp_param="ul_mru_size$usr_index";eval tmp_val=\$$tmp_param
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannMRUUser${usr_index} x$ul_mru_idx=$tmp_val
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "MRU_PLAN_FOR_${usr_index}_USER_${CURRENT_IFACE_NAME}" x$ul_mru_idx=$tmp_val
 		fi
 	done
 
@@ -11271,25 +11709,22 @@ send_plan_for_4_users()
 			aid_index=`echo ${aid_index//[!0-9]/}`
 		fi
 		[ $aid_index -gt 0 ] && sta_index=$((aid_index-1))
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-		[ -z "$glob_ap_sta_aid" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$dl_usr_usp_station_indexes_idx=$sta_index
+		[ -z "$glob_ap_sta_aid" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_usp_station_indexes_idx=$sta_index
 		[ "$ap_type" = "EHT" ] && [ "$ap_num_ss" != "" -a "$ap_num_ss_mac" != "" ] && update_nss_in_plan $ap_aid_index $sta_index
-		$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $sortFile
+		echo "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $sortFile
 		if [ "$ap_mrualloctones" != "" ]; then
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannMRUUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $MRUFile
+			echo "MRU_PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" >> $MRUFile
 		fi
 		ldpc_tmp_1="ldpc_${aid_index}"
 		ldpc_support=`eval 'echo $'$ldpc_tmp_1`
-		ap_get_debug_hostap_conf_or_Post_Up_idx=`grep 'sMuStaticPlannUser'$ap_aid_index $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
+		[ "$ldpc_support" != "" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
 		
 		if [ "$glob_ap_trigger_coding" = "BCC" ]; then
 			ap_bcc_ldpc_int=0
 		elif [ "$glob_ap_trigger_coding" = "LDPC" ]; then
 			ap_bcc_ldpc_int=1
 		fi
-		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlannUser${ap_aid_index} x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
+		Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${ap_aid_index}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_ldpc_idx=$ap_bcc_ldpc_int
 
 	done
 	
@@ -11300,15 +11735,15 @@ send_plan_for_4_users()
 		cnt=0
 		while read -r line_1; do
 			usr="$(echo "${line_1}" | cut -d' ' -f1)"
-			ap_get_debug_hostap_conf_or_Post_Up_idx=`grep $usr $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx ${usr} x$dl_usr_sub_band_per_usp_idx=$cnt
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx ${usr} x$rcr_tf_usr_sub_band_idx=$cnt
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_sub_band_per_usp_idx=$cnt
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_sub_band_idx=$cnt
 			cnt=$((cnt+1))
-			$UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' >> $usersFile
+			"PLAN_FOR_${usr}_USER_${CURRENT_IFACE_NAME}" >> $usersFile
 		done < $sortFile
 
 		while read -r line; do
-			static_plan_config="${static_plan_config} $(echo $line | sed "s/sMuStaticPlannUser[0-9]//g")"
+			eval values=\${$line}
+			static_plan_config="${static_plan_config} ${values}"
 		done < $usersFile
 
 		rm -f $sortFile $sortedFile $usersFile
@@ -11316,15 +11751,16 @@ send_plan_for_4_users()
 		#TODO : Check for no regression in legacy through thorough testing
 		#sort -k option is not supported !!!
 		if [ "$MODEL" = "WAV700_AP" ]; then
-			sed -i 's/sMuStaticPlannUser[0-9]//g' $sortFile
 			sort -n $sortFile > $sortedFile
 			while read -r line; do
-				static_plan_config="${static_plan_config} ${line}"
+				eval values=\${$line}
+				static_plan_config="${static_plan_config} ${values}"
 			done < $sortedFile
 		else
 			sort -k2 -n $sortFile > $sortedFile
 			while read -r line; do
-				static_plan_config="$(echo $line | sed "s/sMuStaticPlannUser[0-9]//g") ${static_plan_config}"
+				eval values=\${$line}
+				static_plan_config="${values} ${static_plan_config}"
 			done < $sortedFile
 		fi
 		rm -f $sortFile $sortedFile
@@ -11332,11 +11768,11 @@ send_plan_for_4_users()
 
 	if [ "$ap_mrualloctones" != "" ]; then
 		debug_print "remove sMuStaticPlannUserMRU from sortPlan"
-		sed -i 's/sMuStaticPlannMRUUser[0-9]//g' $MRUFile
 
 		while read -r line; do
 			debug_print "static_plan_config"
-			static_plan_config="${static_plan_config} ${line}"
+			eval values=\${$line}
+			static_plan_config="${static_plan_config} ${values}"
 		done < $MRUFile
 	fi
 
@@ -11347,18 +11783,23 @@ send_plan_for_4_users()
 		ap_mu_tf_len="310"
 	fi
 
-
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
-	[ -n "$ap_mu_tf_len" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$rcr_com_tf_length_idx=$ap_mu_tf_len
+	[ -n "$ap_mu_tf_len" ] && Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$rcr_com_tf_length_idx=$ap_mu_tf_len
 
 	if [ "$global_emlsr_tb_ul_ofdma" = "1" ] && [ "$mu_type" = "0" ]; then
 		#update PhaseRepetion=0 & muSequenceType=7
-		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x${dl_com_number_of_phase_repetitions_idx}=0
-		set_get_helper $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx="sMuStaticPlann_common" x2=7
+		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x${dl_com_number_of_phase_repetitions_idx}=0
+		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=7
+	fi
+	
+	ofdma_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_phases_format_idx`
+	#Configuring MU Sequence type in static plan to MU-BAR (0) for all 4 user DL OFDMA test cases as per WLANRTSYS-89198
+	if [ "$mu_type" = "0" ] && [ "$ofdma_type" = "0" ]; then
+		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=0
 	fi
 
-	uci_commit_wireless
-	static_plan_config="$($UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' | sed 's/sMuStaticPlann_common//g' | sed 's/false/0/g') ${static_plan_config}"
+	line="PLAN_COMMON_${CURRENT_IFACE_NAME}"
+	eval values=\${$line}
+	static_plan_config="$values ${static_plan_config}"
 	debug_print "CREATE COMMAND: Args $static_plan_config"
 	
 	info_print "plan for 4 user Ru not sorted: iw dev $interface_name iwlwav sMuStatPlanCfg $static_plan_config"
@@ -11391,20 +11832,17 @@ send_plan_for_4_users()
 send_plan_off()
 {
 	#local interface_name sp_enable static_plan_config CURRENT_WLAN_NAME CURRENT_RADIO_UCI_PATH
-	local interface_name=$1
 	local CURRENT_WLAN_NAME=$1
-	local CURRENT_RADIO_UCI_PATH=$2
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`get_sMuStaticPlann_common_idx_from_db $CURRENT_RADIO_UCI_PATH`
+	local interface_name=$2
 	info_print "send_plan_off $interface_name"
-	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=0
-	info_print "Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx sMuStaticPlann_common x$operation_mode_idx=0"
-	static_plan_config="$($UCI_CMD get $CURRENT_RADIO_UCI_PATH.$ap_get_debug_hostap_conf_or_Post_Up_idx | sed 's/=/ /g' | sed 's/sMuStaticPlann_common//g' | sed 's/false/0/g')"
-	static_plan_config=`echo $static_plan_config`
+	Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${interface_name}" x$operation_mode_idx=0
+	info_print "Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_COMMON_${2}" x$operation_mode_idx=0"
+	eval static_plan_config=\${PLAN_COMMON_${2}}
 	info_print "static_plan_config=$static_plan_config"
 	if [ -n "$static_plan_config" ]
 	then
-		eval iw dev $interface_name iwlwav sMuStatPlanCfg $static_plan_config
-		debug_print "iw plan off : iw dev $interface_name iwlwav sMuStatPlanCfg $static_plan_config"
+		eval iw dev $CURRENT_WLAN_NAME iwlwav sMuStatPlanCfg $static_plan_config
+		debug_print "iw plan off : iw dev $CURRENT_WLAN_NAME iwlwav sMuStatPlanCfg $static_plan_config"
 	fi
 }
 
@@ -11412,17 +11850,21 @@ send_plan_off()
 handler_func(){
 	debug_print "handler_func $@"
 	. /tmp/sigma_hf_arguments
+	. /tmp/plans
 	local plan_type current_wlan station_number curr_radio
 	plan_type=$1
 	current_wlan=$2
 	station_number=$3
 	glob_ofdma=$4
+	eval CURRENT_RADIO_PATH=$current_radio
+	eval CURRENT_IFACE_NAME=$current_ap_name
 
 	if [ "$ucc_program" = "eht" ]; then
 		debug_print "Set the RADIO_UCI_PATH correctly depending on the wlan name"
-		[ "$current_wlan" = "wlan0.0" ] && curr_radio="wireless.radio0"
-		[ "$current_wlan" = "wlan2.0" ] && curr_radio="wireless.radio2"
-		[ "$current_wlan" = "wlan4.0" ] && curr_radio="wireless.radio4"
+		[ "$current_wlan" = "wlan0.1" ] && curr_radio="24G" && CURRENT_RADIO_PATH=$CURRENT_24G_RADIO_PATH
+		[ "$current_wlan" = "wlan2.1" ] && curr_radio="5G" && CURRENT_RADIO_PATH=$CURRENT_5G_RADIO_PATH
+		[ "$current_wlan" = "wlan4.1" ] && curr_radio="6G" && CURRENT_RADIO_PATH=$CURRENT_6G_RADIO_PATH
+		CURRENT_IFACE_NAME=$curr_radio
 	fi
 
 	#Skip sending 1-user plan for MIMO
@@ -11433,23 +11875,14 @@ handler_func(){
 	if [ "$global_ap_preamble_puncture" != "enable" ] && [ "$station_number" = "3" ]; then
 		plan_type="plan_off"
 	fi
-	ap_get_debug_hostap_conf_or_Post_Up_idx=`grep  -w 'twt_responder_support' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
-	glob_twt_respsupport=`$UCI_CMD get $current_radio.$ap_get_debug_hostap_conf_or_Post_Up_idx`
-	glob_twt_respsupport="${glob_twt_respsupport#*=}"
+	glob_twt_respsupport=`ubus-cli $CURRENT_RADIO_PATH.Vendor.TwtResponderSupport?`
+	glob_twt_respsupport=`echo $glob_twt_respsupport | cut -d"=" -f2 | tr -d '"'`
 	case "$plan_type" in
 		"plan_off")
-			if [ "$ucc_program" != "eht" ]; then
-				send_plan_off ${current_wlan/.0} $current_radio
-			else
-				send_plan_off ${current_wlan/.0} $curr_radio
-			fi
+			send_plan_off ${current_wlan/.1} $CURRENT_IFACE_NAME
 		;;
 		"plan_on")
-			if [ "$ucc_program" != "eht" ]; then
-				send_plan_for_${3}_users ${current_wlan/.0} $station_number $current_radio $glob_ssid $current_wlan
-			else
-				send_plan_for_${3}_users ${current_wlan/.0} $station_number $curr_radio $glob_ssid $current_wlan
-			fi
+			send_plan_for_${3}_users ${current_wlan/.1} $station_number $CURRENT_RADIO_PATH $glob_ssid $current_wlan $CURRENT_IFACE_NAME
 		;;
 		*)
 			error_print "Error: wrong plan type." #error_print
@@ -11499,10 +11932,10 @@ mbo_handler() {
 	local scs_add_notification=`echo $@ | grep AP-STA-SCS-ADD`
 	local scs_rem_notification=`echo $@ | grep AP-STA-SCS-REM`
 
-	if [ "$scs_add_notification" != "" ] || [ "$scs_rem_notification" != "" ] ; then
+	if [ "$scs_add_notification" != "" ] || [ "$scs_rem_notification" != "" ] ; then		
 		get_common_uci_path
 		get_interface_details $@
-		curr_ifname=$CURRENT_IFACE_IFNAME
+		curr_ifname=$CURRENT_WLAN_NAME
 	fi
 
 	if [ "$ucc_program" = "vht" ]; then
@@ -11582,11 +12015,11 @@ mbo_handler() {
 		done
 	elif [ "$scs_add_notification" != "" ]; then
 	    debug_print "scs_add received"	    
-		curr_ifname=$(echo "$@" | grep -o wlan.\* | sed 's/.$//')
+		curr_ifname=$(echo "$@" | grep -o -E 'wlan[0-9]+\.[0-9]+')
 		handler_func "plan_on" $curr_ifname 1 &
 	elif [ "$scs_rem_notification" != "" ]; then
 	    debug_print "scs_rem received"
-		curr_ifname=$(echo "$@" | grep -o wlan.\* | sed 's/.$//')
+		curr_ifname=$(echo "$@" | grep -o -E 'wlan[0-9]+\.[0-9]+')
 		handler_func "plan_off" $curr_ifname 1 &
 	fi
 }
@@ -11660,33 +12093,33 @@ if [ "$source_flag" = "sigma-start.sh" ]; then
 	let ap_line_count=0
 
 	while read line; do
-	debug_print "read: >>>$line<<<"
-	let ap_line_count+=1
-	# remove special characters except comma, underscore, exclamation mark
-	#tline=`echo $line | tr -dc '[:alnum:],_!\n'`
-	#debug_print "tline: >>>$tline<<<"
-	# For Windows hosts we need to remove carriage returns from the line
-	tline=`echo $line | tr -d '\r'`
-	# Delete trailing spaces
-	tline=`echo $tline | sed 's/ *$//g'`
-	debug_print "tline: >>>$tline<<<"
-	IFS=,
-	parse_command $tline
-	IFS=$ORIG_IFS
+		debug_print "read: >>>$line<<<"
+		let ap_line_count+=1
+		# remove special characters except comma, underscore, exclamation mark
+		#tline=`echo $line | tr -dc '[:alnum:],_!\n'`
+		#debug_print "tline: >>>$tline<<<"
+		# For Windows hosts we need to remove carriage returns from the line
+		tline=`echo $line | tr -d '\r'`
+		# Delete trailing spaces
+		tline=`echo $tline | sed 's/ *$//g'`
+		debug_print "tline: >>>$tline<<<"
+		IFS=,
+		parse_command $tline
+		IFS=$ORIG_IFS
 
-	debug_print "lines parsed: $ap_line_count"
-	debug_print "clearing all temp ap_ variables"
+		debug_print "lines parsed: $ap_line_count"
+		debug_print "clearing all temp ap_ variables"
 
-	variables=`set | grep "^ap_" | cut -d= -f1 | xargs echo `
-	for var in $variables; do
-		#debug_print "clearing $var"
-		unset ${var}
-	done
+		variables=`set | grep "^ap_" | cut -d= -f1 | xargs echo `
+		for var in $variables; do
+			#debug_print "clearing $var"
+			unset ${var}
+		done
 
-	unset variables
-	unset token
-	unset line
-	unset tline
+		unset variables
+		unset token
+		unset line
+		unset tline
 	done
 	if [ "$tc_name" = "4.44.1" ] && [ "$OS_NAME" = "RDKB" ]
 	then

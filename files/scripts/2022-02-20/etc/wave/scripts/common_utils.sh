@@ -199,7 +199,7 @@ update_mac_address()
 		fi
 	fi
 
-	if [ "$OS_NAME" = "UGW" -o "$rdk_error" = "1" ]; then
+	if [ "$OS_NAME" = "UGW" -o "$OS_NAME" = "UPDK" -o "$rdk_error" = "1" ]; then
 		if [ -e "/nvram/etc/wave/wav_base_mac" ]; then
 			source /nvram/etc/wave/wav_base_mac
 			board_mac=${board_mac##*HWaddr }

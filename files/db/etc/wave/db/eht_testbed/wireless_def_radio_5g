@@ -163,6 +163,7 @@
               option debug_hostap_conf_148 'advertise_ecsa_ie=0'
               option debug_hostap_conf_149 'eht_mac_scs_traffic_desc=0'
               option debug_hostap_conf_150 'eht_mld_tsf_diff=0'
+              option debug_hostap_conf_151 'rnr_6g_op_class_137_allowed=0'
               option debug_iw_post_up_1 'sFixedLtfGi 1 1'
               option debug_iw_post_up_2 'sDoSimpleCLI 70 1'
               option debug_iw_post_up_3 'sDoSimpleCLI 3 13 10000 0'
