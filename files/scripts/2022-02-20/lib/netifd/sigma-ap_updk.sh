@@ -24,6 +24,7 @@ WAVE_VERSION=${WAVE_VERSION##*=}
 WAVE_VERSION=${WAVE_VERSION//\"}
 
 CA_VERSION="Sigma-CAPI-10.12.0-${WAVE_VERSION}"
+BOARD=`cat /proc/device-tree/model | cut -d"," -f2`
 
 VENDOR='MxL'
 DEBUGGING=1 # 1=enabled 0=disabled
@@ -40,6 +41,23 @@ info_print()
 	echo "sigma INFO: $*" > /dev/console
 }
 
+check_board()
+{
+	if [ "$BOARD" == "osp-tb341-v2" ]; then
+		ap_tmp=`which iw-mxl`
+		if [ "$ap_tmp" != "" ]; then
+			ap_tmp=`which iw`
+			tmp=`rm -rf $ap_tmp`
+			ap_tmp=`echo $ap_tmp | cut -d "/" -f1-3`
+			tmp=`mv $ap_tmp/iw-mxl $ap_tmp/iw`
+		fi
+
+		echo 1;
+	else
+		echo 0;
+	fi
+}
+
 SEND_IW_WLAN0="iw dev wlan0 iwlwav"
 SEND_IW_WLAN2="iw dev wlan2 iwlwav"
 SEND_IW_WLAN4="iw dev wlan4 iwlwav"
@@ -47,12 +65,12 @@ SEND_IW_WLAN4="iw dev wlan4 iwlwav"
 CURRENT_5G_RADIO_PATH="WiFi.Radio.2"
 CURRENT_24G_RADIO_PATH="WiFi.Radio.1"
 CURRENT_6G_RADIO_PATH="WiFi.Radio.3"
-CURRENT_5G_AP_PATH="WiFi.AccessPoint.9"
+CURRENT_5G_AP_PATH="WiFi.AccessPoint.10"
 CURRENT_24G_AP_PATH="WiFi.AccessPoint.1"
-CURRENT_6G_AP_PATH="WiFi.AccessPoint.17"
-CURRENT_5G_SSID_PATH="WiFi.SSID.9"
+CURRENT_6G_AP_PATH="WiFi.AccessPoint.18"
+CURRENT_5G_SSID_PATH="WiFi.SSID.10"
 CURRENT_24G_SSID_PATH="WiFi.SSID.1"
-CURRENT_6G_SSID_PATH="WiFi.SSID.17"
+CURRENT_6G_SSID_PATH="WiFi.SSID.18"
 CURRENT_6G_SSID_PATH_2=""
 CURRENT_5G_SSID_PATH_2=""
 CURRENT_24G_SSID_PATH_2=""
@@ -61,6 +79,16 @@ CURRENT_5G_AP_PATH_2=""
 CURRENT_24G_AP_PATH_2=""
 CURRENT_SSID_PATH_2=""
 CURRENT_AP_PATH_2=""
+
+board=`check_board`
+if [ "$board" == "1" ]; then
+	CURRENT_5G_AP_PATH="WiFi.AccessPoint.1"
+	CURRENT_24G_AP_PATH="WiFi.AccessPoint.2"
+	CURRENT_6G_AP_PATH="WiFi.AccessPoint.3"
+	CURRENT_5G_SSID_PATH="WiFi.SSID.1"
+	CURRENT_24G_SSID_PATH="WiFi.SSID.2"
+	CURRENT_6G_SSID_PATH="WiFi.SSID.3"
+fi
 
 LOG_CMD=$SCRIPTS_PATH/wave_collect_debug.sh
 HOSTAPD_CLI_CMD=hostapd_cli
@@ -76,6 +104,7 @@ SID_6G_MAX="509"
 FORCE_EHT_FIXED_RATE_CFG_FILE_PATH="/tmp/force_eht_fixed_rate_cfg"
 FORCE_AKM_SUITE_TYPE_TO_SAE_AND_SAEEXTKEY_FILE_PATH="/tmp/force_akm_suite_type_to_sae_and_sae_ext_key"
 N_TESTING_FILE_PATH="/tmp/11n_testing"
+WMMPS_TESTING_FILE_PATH="/tmp/wmmps_testing"
 
 dirname()
 {
@@ -112,22 +141,42 @@ restore_default_config()
 	local is_dfs_channel=`check_dfs_channel`
 	[ "$is_dfs_channel" == "1" ] && sleep 65
 
-	# Clear the extra VAPs(wlan2.2 - wlan2.8, wlan0.2 - wlan0.8 and wlan4.2 - wlan4.8) attached to br-guest	
-	for i in 2 16 24
-	do
-		ret=`ubus call WiFi.AccessPoint.$i _set '{"parameters": {"Enable": "0"}}'`
+	if [ "$board" == "1" ]; then
+		# Clear the extra VAPs(wlan2.2, wlan0.2 and wln4.2) attached to br-guest
+		ret=`ubus call WiFi.AccessPoint.4 _set '{"parameters": {"Enable": "0"}}'`
 		sleep 3
-	done
-	
-	for i in 2 3 4 5 6 7 8
-	do
-		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe2gssid${i}\"}\'`
+		ret=`ubus call WiFi.AccessPoint.5 _set '{"parameters": {"Enable": "0"}}'`
+		sleep 3
+		ret=`ubus call WiFi.AccessPoint.6 _set '{"parameters": {"Enable": "0"}}'`
+		sleep 3
+		ret=`ubus call WiFi delVAPIntf '{"vap": "vap2g0guest"}'`
 		sleep 4
-		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe5gssid${i}\"}\'`
+		ret=`ubus call WiFi delVAPIntf '{"vap": "vap5g0guest"}'`
 		sleep 4
-		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe6gssid${i}\"}\'`
+		ret=`ubus call WiFi delVAPIntf '{"vap": "vap6g0guest"}'`
 		sleep 4
-	done	
+	else
+		# Clear the extra VAPs(wlan2.2 - wlan2.8, wlan0.2 - wlan0.8 and wlan4.2 - wlan4.8) attached to br-guest
+		for i in 2 17 25
+		do
+			ret=`ubus call WiFi.AccessPoint.$i _set '{"parameters": {"Enable": "0"}}'`
+			sleep 3
+		done
+
+		for i in 2 3 4 5 6 7 8
+		do
+			ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe2gssid${i}\"}\'`
+			sleep 4
+			ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe5gssid${i}\"}\'`
+			sleep 4
+			ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe6gssid${i}\"}\'`
+			sleep 4
+		done
+		ret=`ubus call WiFi.AccessPoint.9 _set '{"parameters": {"Enable": "0"}}'`
+		sleep 3
+		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe2gssid9\"}\'`
+		sleep 4
+	fi
 
 	ret=`ubus call WiFi.EndPoint.1 _set '{"parameters": {"Enable": "0"}}'`
 	sleep 3
@@ -759,9 +808,9 @@ verify_interfaces_up()
 	fi
 }
 
-FIXED_RATE_CFG_5G="511 1 2 4 2 11 2 0 0 0 2"
-FIXED_RATE_CFG_6G="511 1 2 4 2 11 2 0 0 0 2"
-FIXED_RATE_CFG_24G="511 1 2 4 2 11 2 0 0 0 2"
+FIXED_RATE_CFG_5G="1023 1 2 4 2 11 2 0 0 0 2"
+FIXED_RATE_CFG_6G="1023 1 2 4 2 11 2 0 0 0 2"
+FIXED_RATE_CFG_24G="1023 1 2 4 2 11 2 0 0 0 2"
 
 # Static planner - Defined indexes names and location
 PLAN_COMMON_5G="0 32000 1 2 0 0 0 0 2700 26 6 6 2 2 2 2914 3 0 0 0 0 0"
@@ -794,6 +843,29 @@ MRU_PLAN_FOR_2_USER_24G="0 0"
 MRU_PLAN_FOR_3_USER_24G="0 0"
 MRU_PLAN_FOR_4_USER_24G="0 0"
 
+update_static_plan_for_he()
+{
+	FIXED_RATE_CFG_24G="1023 1 0 4 2 11 2 0 0 0 2" 
+	
+	PLAN_COMMON_24G="0 32000 1 0 0 0 0 0 2700 26 2 2 2 2 2 2914 3 0 0 0 0 0"
+	PLAN_FOR_1_USER_24G="0 27 255 27 0 0 0 1 0 0 2 70 1 27 0 0 1 0 1"
+	PLAN_FOR_2_USER_24G="0 27 255 27 0 0 2 1 0 0 2 70 1 27 0 2 1 0 1"
+	PLAN_FOR_3_USER_24G="0 27 255 27 0 0 5 1 0 0 2 70 1 27 0 5 1 0 1"
+	PLAN_FOR_4_USER_24G="0 27 255 27 0 0 7 1 0 0 2 70 1 27 0 7 1 0 1"
+	
+	PLAN_COMMON_5G="0 32000 1 2 0 0 0 0 2700 26 2 2 2 2 2 2914 3 0 0 0 0 0"
+	PLAN_FOR_1_USER_5G="0 27 255 27 0 0 0 3 0 0 2 70 1 27 0 0 3 0 1"
+	PLAN_FOR_2_USER_5G="0 27 255 27 0 1 0 3 0 0 2 70 1 27 1 0 3 0 1"
+	PLAN_FOR_3_USER_5G="0 27 255 27 0 2 0 3 0 0 2 70 1 27 2 0 3 0 1"
+	PLAN_FOR_4_USER_5G="0 27 255 27 0 3 0 3 0 0 2 70 1 27 3 0 3 0 1"
+	
+	PLAN_COMMON_6G="0 32000 1 2 0 0 0 0 2700 26 2 2 2 2 2 2914 3 0 0 0 0 0"
+	PLAN_FOR_1_USER_6G="0 27 255 27 0 0 0 3 0 0 2 70 1 27 0 0 3 0 1"
+	PLAN_FOR_2_USER_6G="0 27 255 27 0 1 0 3 0 0 2 70 1 27 1 0 3 0 1"
+	PLAN_FOR_3_USER_6G="0 27 255 27 0 2 0 3 0 0 2 70 1 27 2 0 3 0 1"
+	PLAN_FOR_4_USER_6G="0 27 255 27 0 3 0 3 0 0 2 70 1 27 3 0 3 0 1"
+}
+			
 #common SP
 operation_mode_idx=0
 txop_com_max_tx_op_duration_idx=1
@@ -1091,6 +1163,18 @@ get_test_case_name()
 	echo "$tc_name"
 }
 
+get_program_name()
+{
+	local ssid_name prog_name
+
+	[ -z "$1" ] && echo "get_test_case_name: ERROR: Missing ssid name" && echo 0
+	ssid_name=$1
+
+	prog_name=${ssid_name%%-*}    #trim trailing postfix
+
+	echo "$prog_name"
+}
+
 get_nof_sta_per_he_test_case()
 {
 	local ssid_name tc_name_1 
@@ -1223,9 +1307,13 @@ get_interface_details()
 	CURRENT_6G_IFACE_NAME="6G"
 	CURRENT_5G_IFACE_NAME="5G"
 	CURRENT_24G_IFACE_NAME="24G"
-	CURRENT_6G_AP_PATH="WiFi.AccessPoint.17"
-	CURRENT_6G_SSID_PATH="WiFi.SSID.17"
-	
+	CURRENT_6G_AP_PATH="WiFi.AccessPoint.18"
+	CURRENT_6G_SSID_PATH="WiFi.SSID.18"
+	if [ "$board" == "1" ]; then
+		CURRENT_6G_AP_PATH="WiFi.AccessPoint.3"
+		CURRENT_6G_SSID_PATH="WiFi.SSID.3"
+	fi
+
 	if [ "$ap_cur_wlan_tag" = "6G" ] || [ "$ap_channel" -eq "33" ] || [ "$ap_channel" -eq "37" ] || [ "$ap_channel" -eq "53" ] || [ "$ap_interface" = "6G" ] || [ "$ap_channel_freq" -gt "5924" ]
 	then
 		ap_interface_name="6G"
@@ -1254,7 +1342,7 @@ get_interface_details()
 		ap_wlan_name=$CURRENT_24G_WLAN_NAME
 		if [ "$tag_given" = "done" ]
 		then
-			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=5G
+			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=24G
 		fi
 		ap_radio_path=$CURRENT_24G_RADIO_PATH
 		ap_interface_path=$CURRENT_24G_AP_PATH
@@ -2041,6 +2129,16 @@ is_11n_testcase()
 	fi
 }
 
+is_wmmps_testcase()
+{
+	if [ -e $WMMPS_TESTING_FILE_PATH ]
+	then
+		echo 1
+	else
+		echo 0
+	fi
+}
+
 ap_set_wireless()
 {
 	ap_name="Maxlinear"
@@ -2050,6 +2148,7 @@ ap_set_wireless()
 	[ -z "$mlo_counter" ] && mlo_counter=0
 	[ -z "$mlo_id_counter" ] && mlo_id_counter=0
 	[ -z "$n_reset_counter" ] && n_reset_counter=0
+	[ -z "$wmmps_reset_counter" ] && wmmps_reset_counter=0
 
 	get_interface_details $@
 
@@ -2074,6 +2173,7 @@ ap_set_wireless()
 			check_and_update_prog_for_wifi7 $glob_ssid  #This is required to pass the WPA3 certification tests in WiFi 7, Check the definition for detailed comments.
 			check_for_WiFi6R2_test_case $glob_ssid
 			static_plan_init_debug_infra
+			prog_name=`get_program_name $glob_ssid`
 
 			tc_name=`get_test_case_name $glob_ssid`
 			if [ -z "$ap_non_tx_bss_index" ]; then
@@ -2109,7 +2209,7 @@ ap_set_wireless()
 						change_ssid_one_time=1
 					fi
 					if [ -z "$ap_non_tx_bss_index" -a "$ap_program" != "EHT" ]; then
-						ret=`ubus-cli "$CURRENT_SSID_PATH.SSID=$1"`
+						ret=`ubus-cli "$CURRENT_SSID_PATH.SSID=\"$1\""`
 					fi
 				fi
 			fi
@@ -2166,6 +2266,13 @@ ap_set_wireless()
 				ucc_program="11n"
 				restore_default_config
 				ap_11n_reset_default
+			fi
+			local is_wmmps=`is_wmmps_testcase`
+			if [ $is_wmmps -eq 1 ] && [ $wmmps_reset_counter -eq 0 ]; then
+				wmmps_reset_counter=$((wmmps_reset_counter+1))
+				ucc_program="wmmps"
+				restore_default_config
+				ap_common_reset_default wmmps
 			fi
 			#Adding sleep of 10 seconds to make sure that interfaces are up before configuring channel
 			sleep 10
@@ -2284,9 +2391,6 @@ ap_set_wireless()
 		;;
 		STBC_TX)
 			debug_print "set parameter ap_stbc_tx=$1"
-			#TODO: Comma separated list of the number of spatial streams and the number of space time streams.
-			#For example 1spatial stream and 2 space time streams = 1;2
-			#$UCI_CMD set ${CURRENT_IFACE_UCI_PATH}.tx_stbc=$1
 			local ap_tx_bf_val ap_sBfMode_local ap_debug_iw_post_up_idx
 			if [ "$1" = "1"  -o "$1" = "1;2" ]; then
 				ap_tx_bf_val="STBC1X2" 
@@ -2299,12 +2403,12 @@ ap_set_wireless()
 			ap_sBfMode_local=`convert_bf_mode $ap_tx_bf_val`	
 			debug_print "converted ap_sBfMode_local=$ap_sBfMode_local"
 			ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.SetBfMode=$ap_sBfMode_local"`
+			sleep 5
 		;;
 		BW_SGNL)
 			debug_print "set parameter ap_bw_sgnl=$1"
 		;;
 		DYN_BW_SGNL)
-#TODO-Imp
 			debug_print "set parameter ap_dyn_bw_sgnl=$1"
 			if [ "$1" = "enable" ]; then
 					$UCI_CMD set $CURRENT_IFACE_UCI_PATH.debug_hostap_conf_1="sRTSmode=1 0"
@@ -2321,36 +2425,34 @@ ap_set_wireless()
 			#This is not supported in the latest boards, it was suppported till gen5 only
 		;;
 		RADIO)
-#TODO-Imp
 			debug_print "set parameter ap_radio=$1"
 			if [ "$1" = "off" ]; then
-				ap_radio_op="down"
+				ap_radio_op=0
 			elif [ "$1" = "on" ]; then
-				ap_radio_op="up"
+				ap_radio_op=1
 			else
 				send_invalid ",errorCode,2"
 				return
 			fi
-			if [ -n "$is_interface_known" ]; then
-				ap_radio_ifaces=`uci show wireless | grep $CURRENT_WLAN_NAME | awk -F"=" '{print $2}'`
+			if [ -n "$ap_interface" ]; then
+				ret=`ubus-cli "$CURRENT_RADIO_PATH.Enable=$ap_radio_op"`
+				sleep 4
 			else
-				ap_radio_ifaces=`uci show wireless | grep ifname | awk -F"=" '{print $2}'`
+				ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Enable=$ap_radio_op"`
+				sleep 4
+				ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Enable=$ap_radio_op"`
+				sleep 4
+				ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=$ap_radio_op"`
+				sleep 4
 			fi
-			if [ "$ap_program" != "EHT" ]; then
-				for ap_radio_iface in $ap_radio_ifaces; do
-					res=`eval ifconfig $ap_radio_iface $ap_radio_op`
-				done
-			else
-				[ "$ap_radio_op" = "down" ] && wifi down
-				[ "$ap_radio_op" = "up" ] && wifi up
-			fi
+
 			#Verify if interfaces were up for the radio
-			if [ "$ap_radio_op" = "up" ]; then
+			if [ "$ap_radio_op" = "1" ]; then
 				local ap_radio_verify_up=0
-				if [ -z "$is_interface_known" ]; then
+				if [ -z "$ap_interface" ]; then
 					ap_radio_verify_up=`verify_interfaces_up`
 				else
-					ap_radio_verify_up=`verify_interfaces_up $CURRENT_WLAN_NAME`
+					ap_radio_verify_up=`verify_interfaces_up $CURRENT_AP_NAME`
 				fi
 				
 				if [ $ap_radio_verify_up -eq 1 ]; then
@@ -3113,9 +3215,12 @@ ap_set_wireless()
 	# txop will be disabled for all WiFi6R2 2.4G test cases with UL OFDMA.
 	if [ "$is_wifi6r2_2gtc" = "True" ] && [ "$glob_ap_ofdma" = "ul" ] && [ "$ucc_type" = "dut" ]; then
 		iw dev wlan0 iwlwav sTxopConfig 511 0 500 4  	#Disable TXOP
-	else
-		iw dev wlan0 iwlwav sTxopConfig 0 1 20000 4		#Enable TXOP
-	fi	
+	fi
+
+	if [ "$prog_name" = "QM" ]; then
+		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SCSEnable=1"`
+		sleep 5
+	fi
 
 	if [ "$ap_program" = "HE" ] || [ "$ap_program" = "EHT" ]; then
 		if [ "$ap_width" != "" ]; then
@@ -3901,7 +4006,7 @@ ap_set_wireless()
 					string2="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=1"
 					string3="$CURRENT_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=1"
 					string4="$CURRENT_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=1"
-					string5="$CURRENT_RADIO_PATH.Vendor.HePhyMacNc=3"
+					string5="$CURRENT_RADIO_PATH.Vendor.HePhyMaxNc=3"
 					string6="exit"
 
 					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6" | ubus-cli`
@@ -4089,7 +4194,7 @@ ap_set_wireless()
 					string1="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformerCapable=1"
 					string2="$CURRENT_RADIO_PATH.Vendor.HePhyMuBeamformerCapable=1"
 					string3="$CURRENT_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=1"
-					string4="$CURRENT_RADIO_PATH.Vendor.HePhyMacNc=4"
+					string4="$CURRENT_RADIO_PATH.Vendor.HePhyMaxNc=4"
 					string5="$CURRENT_RADIO_PATH.Vendor.HePhyTriggerSuBeamformFeedback=1"
 					string6="exit"
 					ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5\n$string6" | ubus-cli`
@@ -4840,8 +4945,6 @@ ap_set_security()
 		[ "$ML_VAP1" = "24G" ] && $UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="mld_num_simul_links=0"
 	fi
 
-
-
 	if [ "$CURRENT_AP_PATH" = "" ]; then
 		debug_print "Can't obtain uci path"
 	fi
@@ -5041,6 +5144,16 @@ ap_set_security()
 			;;
 			SAE_PWE)
 				debug_print "Received ap_sae_pwe=$1"
+				ap_sae_pwe=0
+				if [ "$1" == "h2e" ]; then
+					ap_sae_pwe=1
+				fi
+				ap_sec=`ubus-cli $CURRENT_AP_PATH.Security.ModeEnabled?`
+				ap_sec=`echo $ap_sec | cut -d"=" -f2 | tr -d '"'`
+				if [ "$ap_sec" == "WPA3-Personal" ]; then
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.H2eRequired=\"$ap_sae_pwe\""`
+					sleep 10
+				fi
 			;;
 			TRANSITION_DISABLE)
 				ap_transition_disable=$1
@@ -5056,6 +5169,17 @@ ap_set_security()
 		esac
 		shift
 	done
+
+	ap_sec=`ubus-cli $CURRENT_AP_PATH.Security.ModeEnabled?`
+	ap_sec=`echo $ap_sec | cut -d"=" -f2 | tr -d '"'`
+	if [ "$ap_sec" == "WPA-Enterprise" -o "$ap_sec" == "WPA2-Enterprise" -o "$ap_sec" == "WPA-WPA2-Enterprise" ]; then
+		eval TAG1_VAP_PATH=\${CURRENT_${CURRENT_WLAN_TAG1}_AP_PATH}
+		eval TAG2_VAP_PATH=\${CURRENT_${CURRENT_WLAN_TAG2}_AP_PATH}
+		[ "$TAG1_VAP_PATH" != "" ] && ret=`ubus-cli "$TAG1_VAP_PATH.WPS.Enable=0"`
+		[ "$TAG2_VAP_PATH" != "" ] && ret=`ubus-cli "$TAG2_VAP_PATH.WPS.Enable=0"`
+		[ "$TAG1_VAP_PATH" == "" ] && [ "$TAG1_VAP_PATH" == "" ] && ret=`ubus-cli "$CURRENT_AP_PATH.WPS.Enable=0"`
+		sleep 10
+	fi
 
 	send_complete
 }
@@ -9124,6 +9248,8 @@ ap_load_radio_config()
 		global_has_vht=1
 	elif [ "$1" == "mbo" ]; then
 		global_has_mbo=1
+	elif [ "$1" == "wmmps" ]; then
+		global_has_wmmps=1
 	fi
 	ap_type=$2
 
@@ -9132,13 +9258,17 @@ ap_load_radio_config()
 	ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.AutoChannelEnable=0"`
 	sleep 8
 
-	if [ "$global_has_11n" == "1" -o "$global_has_pmf" == "1" -o "$global_has_wpa2" == "1" ]; then
+	if [ "$global_has_11n" == "1" -o "$global_has_pmf" == "1" -o "$global_has_wpa2" == "1" -o "$global_has_wmmps" == "1" ]; then
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=0"`
 		sleep 4
 
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=36"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='a,n'"`
+		if [ "$global_has_wmmps" == "1" ]; then
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='a'"`
+		else
+			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='a,n'"`
+		fi
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.RegulatoryDomain='US'"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
@@ -9146,7 +9276,11 @@ ap_load_radio_config()
 
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=6"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='b,g,n'"`
+		if [ "$global_has_wmmps" == "1" ]; then
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='b,g'"`
+		else
+			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='b,g,n'"`
+		fi
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.RegulatoryDomain='US'"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
@@ -9222,7 +9356,7 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=65530"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=65530"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=65530"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyMacNc=1"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhyMaxNc=1"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeOperationCohostedBss=1"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
@@ -9237,22 +9371,28 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeAifsn=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=5"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkAifsn=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkAci=1"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=5"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViAifsn=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViAci=2"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=5"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoAifsn=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoAci=2"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=255"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=5"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.BssColor.HeBssColor=1"`
 		if [ "$ap_type" = "testbed" ]; then
 			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=0"`
 			ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.HePhySuBeamformerCapable=0"`
@@ -9320,7 +9460,7 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=65530"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=65530"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=65530"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyMacNc=1"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhyMaxNc=1"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeOperationCohostedBss=1"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
@@ -9335,22 +9475,28 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeAifsn=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=5"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkAifsn=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkAci=1"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=5"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViAifsn=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViAci=2"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=5"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoAifsn=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoAci=2"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=255"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=5"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.BssColor.HeBssColor=1"`
 		if [ "$ap_type" = "testbed" ]; then
 			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=0"`
 			ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.HePhySuBeamformerCapable=0"`
@@ -9417,7 +9563,7 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxMapLessOrEqual80Mhz=65530"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssRxHeMcsMap160Mhz=65530"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMcsNssTxHeMcsMap160Mhz=65530"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyMacNc=1"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhyMaxNc=1"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SrCtrlHesigaSpatialReuseVal15=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeOperationCohostedBss=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaIePresent=1"`
@@ -9432,22 +9578,28 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeAifsn=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBeTimer=5"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkAifsn=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkAci=1"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcBkTimer=5"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViAifsn=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViAci=2"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcViTimer=5"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoAifsn=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoAci=2"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmin=15"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoEcwmax=15"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=255"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HeMuEdcaAcVoTimer=5"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.BssColor.HeBssColor=1"`
 		if [ "$ap_type" = "testbed" ]; then
 			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhySuBeamformeeCapable=0"`
 			ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.HePhySuBeamformerCapable=0"`
@@ -9518,11 +9670,6 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhySuBeamformee=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMacMaxMpduLen=11000"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyPpeThresholdsPresent=0"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
-		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMldTsfDiff=0"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtPhyCommonNominalPktPad=2"`
 		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=2"`
@@ -9590,11 +9737,6 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhySuBeamformee=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMacMaxMpduLen=11000"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyPpeThresholdsPresent=0"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
-		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtMldTsfDiff=0"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.EhtPhyCommonNominalPktPad=2"`
 		if [ "$ap_type" == "testbed" ]; then
@@ -9654,11 +9796,6 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhySuBeamformee=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMacMaxMpduLen=11000"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyPpeThresholdsPresent=0"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuTypeDownLink=0"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuTypeUpLink=0"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuMinStationsInGroup=4"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuMaxStationsInGroup=4"`
-		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.SetDynamicMuCdbConfig=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMldTsfDiff=0"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtPhyCommonNominalPktPad=2"`
 		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Vendor.EhtMcsMap160MHzRxMcs09=2"`
@@ -9734,6 +9871,8 @@ ap_load_vap_config()
 		global_has_vht=1
 	elif [ "$1" == "mbo" ]; then
 		global_has_mbo=1
+	elif [ "$1" == "wmmps" ]; then
+		global_has_wmmps=1
 	fi
 
 	#Set the VAP, Here AccessPoint and SSID Objects are required
@@ -9744,6 +9883,14 @@ ap_load_vap_config()
 
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		sleep 3
+	fi
+
+	if [ "$global_has_wmmps" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='None'"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='None'"`
 		sleep 3
 	fi
 
@@ -9807,6 +9954,12 @@ ap_load_vap_config()
 		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.SetAggrConfig='1 1 64'"`
 		ret=`ubus-cli "$CURRENT_6G_AP_PATH.Vendor.RrmNeighRpt=1"`
 		sleep 3
+		
+		if [ -z "$global_has_eht" ]; then 
+			$SEND_IW_WLAN0 sFixedRateCfg $FIXED_RATE_CFG_24G
+			$SEND_IW_WLAN2 sFixedRateCfg $FIXED_RATE_CFG_5G
+			$SEND_IW_WLAN4 sFixedRateCfg $FIXED_RATE_CFG_6G
+		fi
 	fi
 
 	if [ "$global_has_eht" == "1" ]; then
@@ -10030,6 +10183,7 @@ ap_reset_default()
 		else
 			ap_he_reset_default
 		fi
+		update_static_plan_for_he
 	elif [ "$ucc_program" = "11n" ] || [ "$ucc_program" = "ffd" ]; then
 		ap_11n_reset_default
 	elif [ "$ucc_program" = "vht" ]; then
@@ -10040,7 +10194,7 @@ ap_reset_default()
 		ap_wpa3_reset_default
 	elif [ "$ucc_program" = "pmf" ]; then
 		ap_pmf_reset_default
-	elif [ "$ucc_program" = "eht" ]; then
+	elif [ "$ucc_program" = "eht" ] || [ "$ucc_program" = "qm" ] ; then
 		if [ "$ap_runtime_id" = "" ] ; then
 			if [ "$ucc_type" = "dut" ]; then
 				ap_eht_reset_default
@@ -10059,6 +10213,8 @@ ap_reset_default()
 	debug_print "Clearing CURRENT_WLAN_TAG variables"
 	unset CURRENT_WLAN_TAG1
 	unset CURRENT_WLAN_TAG2
+	unset TAG1_VAP_PATH
+	unset TAG2_VAP_PATH
 
 	#NO need to wait for the interfaces to be up on Factory Reset
 	if [ "$ucc_program" != "eht" ]; then
@@ -11735,10 +11891,10 @@ send_plan_for_4_users()
 		cnt=0
 		while read -r line_1; do
 			usr="$(echo "${line_1}" | cut -d' ' -f1)"
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr}_USER_${CURRENT_IFACE_NAME}" x$dl_usr_sub_band_per_usp_idx=$cnt
-			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME "PLAN_FOR_${usr}_USER_${CURRENT_IFACE_NAME}" x$rcr_tf_usr_sub_band_idx=$cnt
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $usr x$dl_usr_sub_band_per_usp_idx=$cnt
+			Dynamic_set_get_helper iw_off $CURRENT_WLAN_NAME $usr x$rcr_tf_usr_sub_band_idx=$cnt
 			cnt=$((cnt+1))
-			"PLAN_FOR_${usr}_USER_${CURRENT_IFACE_NAME}" >> $usersFile
+			echo "$usr" >> $usersFile
 		done < $sortFile
 
 		while read -r line; do

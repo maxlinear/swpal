@@ -135,7 +135,7 @@ if [ $sta_number -gt 0 ]; then
 	/lib/netifd/sigmaManagerDaemon_static.sh $* &
 	exit
 fi
-while [ $counter -le "120" ]
+while [ $counter -le "150" ]
 do
 	if [ "$num_of_connected_sta" = "" ]; then
 		num_of_connected_sta=0

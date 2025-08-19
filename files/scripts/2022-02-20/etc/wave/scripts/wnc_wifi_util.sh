@@ -2,6 +2,9 @@
 
 #Global variables
 
+# Print DUT log on console
+DUT_DEBUG_LOG=true
+
 # Define valid center channels for different bands and bandwidths
 valid_center_channels_2_4GHz_20="1 2 3 4 5 6 7 8 9 10 11 12 13 14"
 valid_center_channels_2_4GHz_40="3 4 5 6 7 8 9 10 11"
@@ -28,6 +31,123 @@ search_string() {
 	return 1 # Element not found
 }
 
+util_check_mem_info()
+{
+    iw dev wlan4 iwlwav gEEPROM | grep "EEPROM type   : GPIO" > /dev/null
+    if [ $? -eq 0 ]; then
+        mem_type=1
+        mem_size=2048
+    else
+        iw dev wlan4 iwlwav gEEPROM | grep "EEPROM type   : FILE" > /dev/null
+        if [ $? -eq 0 ]; then
+            mem_type=2
+            mem_size=2048
+        else
+            echo "EEPROM or FLASH doesn't contain calibration data"
+            exit 1
+        fi
+    fi
+}
+
+util_check_dut_mode_status()
+{
+	local pid_file="/tmp/dut_cli.pid"
+	if [ ! -f "$pid_file" ]; then
+		echo "false"
+		return
+	fi
+
+	local pid=$(cat $pid_file)
+	if [ -z "$pid" ]; then
+		echo "false"
+		return
+	fi
+
+	if ps -p $pid > /dev/null; then
+		echo "true"
+	else
+		echo "false"
+	fi
+}
+
+util_manage_dut_mode()
+{
+	local action=$1
+	local pid_file="/tmp/dut_cli.pid"
+
+	if [ "$action" == "true" ]; then
+		echo "Stopping dutserver"
+		/opt/intel/wave/scripts/load_dut.sh stop
+		echo "Starting dutserver"
+		/opt/intel/wave/scripts/load_dut.sh start
+
+		# wait until dutserver started
+		while true
+		do
+			if  pgrep -x "dutserver" > /dev/null
+			then
+				break;
+			else
+				sleep 0.01
+			fi
+		done
+
+		echo "Run DUT mode"
+		echo "" > /tmp/dut_log
+		echo "" > /tmp/dut_commands.txt
+
+		# Get Current br-lan IP address and run dut_cli
+		local ip_addr=$(ifconfig br-lan | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
+		tail -f -s0 /tmp/dut_commands.txt | dut_cli -l 4 -a $ip_addr >> /tmp/dut_log &
+		echo $(pgrep -f "tail -f -s0 /tmp/dut_commands.txt") > $pid_file
+
+		# Wait for prompt
+		util_wait_for_prompt "/tmp/dut_log"
+	else
+		local pid=$(cat $pid_file)
+		kill -9 $pid
+		rm $pid_file
+
+		echo "Stopping dutserver"
+		/opt/intel/wave/scripts/load_dut.sh stop
+	fi
+}
+
+util_manage_pwhm()
+{
+	local action=$1
+
+	# "amx-processmonitor" full name seems not to work for pgrep -x
+	if ! pgrep "amx-process" > /dev/null
+	then
+		if [ "$action" == "true" ]; then
+			if [ -f /etc/init.d/amx-processmonitor ]; then
+				# Need to start amx-processmonitor to monitor pwhm/wld if exists
+				/etc/init.d/amx-processmonitor start
+			fi
+		fi
+	else
+		if [ "$action" == "false" ]; then
+			# Need to stop amx-processmonitor to prevent it from pulling pwhm/wld back
+			# "/etc/init.d/amx-processmonitor stop" cannot work properly
+			killall -9 amx-processmonitor
+		fi
+	fi
+
+	if [ "$action" == "true" ]; then
+		/etc/init.d/prplmesh_whm restart
+		#TODO: WLANRTSYS-88389 Polling mechanism to see the status
+		printInfo "Waiting for 20 seconds to get interfaces up and running"
+		sleep 20
+	else
+		# Stop pwhm before entering DUT mode
+		/etc/init.d/prplmesh_whm stop
+		printInfo "Waiting for 10 sec to stop pwhm"
+		sleep 10
+	fi
+
+}
+
 util_check_wifi_driver_status()
 {
 	# List of modules to check
@@ -51,50 +171,87 @@ util_manage_wifi_radio()
 {
 	local action=$1
 	local radio=$2
+	local dut_mode=$(util_check_dut_mode_status)
+
 	if [ $# -gt 2 ]; then
 		printInfo "Error: Multiple options provided. Please provide only one radio or none."
 		exit 1
 	fi
 
-	if [ -z "$radio" ]; then
-		for radioid in 1 2 3; do
-			ubus-cli "WiFi.Radio.$radioid.Enable=$action"
-		done
-		#TODO: WLANRTSYS-88389 Polling mechanism to see the radio status
-		printInfo "Waiting for 10 sec to see status"
-		sleep 10
-		util_check_radio_status $action $radio
+	if [ "$dut_mode" == "true" ]; then
+		local band
+		util_check_mem_info
+		if [ -z "$radio" ]; then
+			for band in 0 2 4; do
+				if [ "$action" == "true" ]; then
+					echo "Initialize DUT band $band"
+					dut_send_command "exec $band driverInit --memory-type $mem_type --memory-size $mem_size"
+				else
+					echo "Release DUT band $band"
+					dut_send_command "exec $band driverRelease"
+				fi
+				util_check_dut_band_status $band
+			done
+		else
+			band=$(util_extract_band $radio) || { echo "$band"; exit 1; }
+			if [ "$action" == "true" ]; then
+				echo "Initialize DUT band $band"
+				dut_send_command "exec $band driverInit --memory-type $mem_type --memory-size $mem_size"
+			else
+				echo "Release DUT band $band"
+				dut_send_command "exec $band driverRelease"
+			fi
+			util_check_dut_band_status $band
+		fi
 	else
-		local radioid
-		radioid=$(util_extract_radioid $radio) || { echo "$radioid"; exit 1; }
-		ubus-cli "WiFi.Radio.$radioid.Enable=$action"
-		#TODO: WLANRTSYS-88389 Polling mechanism to see the radio status
-		printInfo "Waiting for 10 sec to see status"
-		sleep 10
-		util_check_radio_status $action $radio
+		if [ -z "$radio" ]; then
+			for radioid in 1 2 3; do
+				ubus-cli "WiFi.Radio.$radioid.Enable=$action"
+			done
+			#TODO: WLANRTSYS-88389 Polling mechanism to see the radio status
+			printInfo "Waiting for 10 sec to see status"
+			sleep 10
+			util_check_radio_status $action $radio
+		else
+			local radioid
+			radioid=$(util_extract_radioid $radio) || { echo "$radioid"; exit 1; }
+			ubus-cli "WiFi.Radio.$radioid.Enable=$action"
+			#TODO: WLANRTSYS-88389 Polling mechanism to see the radio status
+			printInfo "Waiting for 10 sec to see status"
+			sleep 10
+			util_check_radio_status $action $radio
+		fi
 	fi
 }
 
 util_init_wifi_driver()
 {
+	local dut_mode=$(util_check_dut_mode_status)
 	local module_params=$(cat /etc/modules.d/iwlwav-driver-uci-debug | grep "mtlk fastpath")
 	local command="modprobe $module_params"
 	echo "Command: $command"
 	eval $command
-	/etc/init.d/prplmesh_whm restart
-	#TODO: WLANRTSYS-88389 Polling mechanism to see the status
-	printInfo "Waiting for 20 seconds to get interfaces up and running"
-	sleep 20
+
+	# Only start pwhm if not in DUT mode
+	if [ "$dut_mode" == "false" ]; then
+		printInfo "Starting AP Mode..."
+		util_manage_pwhm "true"
+	fi
 }
 
-util_check_iface_present()
+util_check_dut_band_status()
 {
-	local iface=$1
+	local band=$1
+	local status
 
-	if [ -d "/sys/class/net/$iface" ]; then
-		printInfo "Interface $iface is enabled"
+	dut_send_command "exec $band getBand"
+	status=$(grep "getBand" /tmp/dut_out$band)
+
+	echo $status | grep "OK" > /dev/null
+	if [ $? -eq 0 ]; then
+		printInfo "DUT Interface $(util_convert_band_to_radio $band)G is enable"
 	else
-		printInfo "WARNING: Interface $iface is not enabled"
+		printInfo "WARNING: DUT Interface $(util_convert_band_to_radio $band)G is not enabled"
 	fi
 }
 
@@ -105,6 +262,7 @@ util_check_radio_status() {
 	local interfaces
 	local cac_status
 	local output
+	local i
 
 	if [ "$expectation" == "true" ]; then
 		output="enabled"
@@ -137,12 +295,19 @@ util_check_radio_status() {
 	fi
 
 	for iface in $interfaces; do
-		state=$(cat /sys/class/net/$iface/operstate)
-		if [ "$state" != "up" ]; then
+		i=0
+		while [ "$i" -lt "10" ]; do
+			state=$(cat /sys/class/net/$iface/operstate)
+			if [ "$state" == "up" ]; then
+				printInfo "Band $radio wifi interface $iface is up and running"
+				break
+			fi
+			sleep 1
+			i=$((i+1))
+		done
+		if [ "$i" -eq "10" ]; then
 			status="false"
 			printInfo "Band $radio wifi interface $iface is not up and running"
-		else
-			printInfo "Band $radio wifi interface $iface is up and running"
 		fi
 	done
 
@@ -244,6 +409,63 @@ determine_bandwidth() {
 	esac
 
 	echo $bandwidth
+}
+
+# Function to determine the maximum supported bandwidth for given protocol
+# args: <band_id> <phymode>
+# *phymode 802.11a = 0, 802.11b = 1, 802.11g = 2, 802.11n 5GHz = 4, 802.11n 2.4GHz = 5, 802.11ac = 6, 802.11ax = 7 and 802.11be = 8
+util_check_max_bandwidth() {
+	local band=$1
+	local phymode=$2
+
+	case $band in
+		"0")
+			if [[ $phymode -ge 1 && $phymode -le 2 ]]; then
+				echo 20
+			elif [ $phymode -ge 5 ]; then
+				echo 40
+			else
+				printInfo "(util_check_max_bandwidth) Invalid protocol for 2.4GHz"
+			fi
+			;;
+		"2")
+			if [ $phymode -eq 0 ]; then
+				echo 20
+			elif [ $phymode -eq 4 ]; then
+				echo 40
+			elif [ $phymode -ge 6 ]; then
+				echo 160
+			else
+				printInfo "(util_check_max_bandwidth) Invalid protocol for 5GHz"
+			fi
+			;;
+		"4")
+			if [ $phymode -eq 7 ]; then
+				echo 160
+			elif [ $phymode -eq 8 ]; then
+				echo 320
+			else
+				printInfo "(util_check_max_bandwidth) Invalid protocol for 6GHz"
+			fi
+			;;
+		*)
+			printInfo "(util_check_max_bandwidth) Unsupported Wi-Fi band. Only 2.4GHz, 5GHz, and 6GHz are supported."
+			exit 1
+			;;
+	esac
+}
+
+# Function to determine the maximum supported spatial stream for given protocol
+# args: <phymode>
+# *phymode 802.11a = 0, 802.11b = 1, 802.11g = 2, 802.11n 5GHz = 4, 802.11n 2.4GHz = 5, 802.11ac = 6, 802.11ax = 7 and 802.11be = 8
+util_check_max_nss() {
+	local phymode=$1
+
+	if [ $phymode -le 2 ]; then
+		echo 1
+	else
+		echo 4
+	fi
 }
 
 # Function to validate center channel and bandwidth
@@ -752,6 +974,41 @@ util_check_ant_mask()
 	echo $1
 }
 
+# Print configured antennas
+# args: <antenna mask>
+util_print_antennas() {
+    antsel=$1
+    antennas=""
+
+    if [ $((antsel & 1)) -ne 0 ]; then
+        antennas="ANT1"
+    fi
+    if [ $((antsel & 2)) -ne 0 ]; then
+        [ -n "$antennas" ] && antennas="$antennas, ANT2" || antennas="ANT2"
+    fi
+    if [ $((antsel & 4)) -ne 0 ]; then
+        [ -n "$antennas" ] && antennas="$antennas, ANT3" || antennas="ANT3"
+    fi
+    if [ $((antsel & 8)) -ne 0 ]; then
+        [ -n "$antennas" ] && antennas="$antennas, ANT4" || antennas="ANT4"
+    fi
+
+    if [ -n "$antennas" ]; then
+		# Count how many antennas are in the string
+		count=$(echo "$antennas" | awk -F, '{ print NF }')
+		if [ "$count" -eq 1 ]; then
+			echo "Antennas set to $antennas ONLY"
+		else
+			# Replace last comma with "and" for nicer formatting
+			formatted=$(echo "$antennas" | sed 's/, \([^,]*\)$/ and \1/')
+			echo "Antennas set to $formatted"
+		fi
+    else
+        echo "No antennas selected"
+    fi
+}
+
+
 #Calculate User 1 and User 2 RU params from phymode, BW, ruSize and ruLocation
 util_calculate_ru_params()
 {
@@ -932,7 +1189,7 @@ util_wait_for_prompt()
 {
 	while true
 	do
-		tail -n1 $1 | grep  ">"
+		tail -n1 $1 | grep  ">" > /dev/null
 		if [ $? -eq 0 ]; then
 			break;
 		fi
@@ -943,11 +1200,14 @@ util_wait_for_prompt()
 # args: <Command string>
 dut_send_command()
 {
-	echo "" > /tmp/dut_out$band
-	tail -n5 -f -s0 /tmp/dut_log > /tmp/dut_out$band &
-	tailpid=$!
-	echo "DUT_COMMAND: $@"
+	local line_count
 
+	echo "" > /tmp/dut_out$band
+	# only save the curret DUT command logs
+	line_count=$(wc -l < /tmp/dut_log)
+	tail -n +$((line_count + 1)) -f -s0 /tmp/dut_log > /tmp/dut_out$band &
+	tailpid=$!
+	[ "$DUT_DEBUG_LOG" = true ] && echo "DUT_COMMAND: $@"
 
 	util_enter_critical_section
 	# send command
@@ -962,23 +1222,31 @@ dut_send_command()
 
 		echo $ret_msg | grep "OK" > /dev/null
 		if [ $? -eq 0 ]; then
-			echo "Command succeeded"
+			[ "$DUT_DEBUG_LOG" = true ] && echo "Command succeeded"
 			util_wait_for_prompt "/tmp/dut_out$band"
 			break
 		else
-			echo "Commmand failed"
+			[ "$DUT_DEBUG_LOG" = true ] && echo "Commmand failed"
 			util_wait_for_prompt "/tmp/dut_out$band"
+			# those commands might need to be continued for DUT band status checking
+			# cannot exit even failed
+			if echo "$@" | grep -q -e "driverInit" -e "driverRelease" -e "getBand"; then
+				break
+			fi
 			util_exit_critical_section
 			exit 1
 		fi
 	done
 
-	echo
 	# Cleanup running processes we started
 	util_cleanup_process
 
 	# print output
-	cat /tmp/dut_out$band
+	if [ "$DUT_DEBUG_LOG" = true ]; then
+		cat /tmp/dut_out$band
+		echo
+		echo
+	fi
 
 	# reset command file
 	echo "" > /tmp/dut_commands.txt

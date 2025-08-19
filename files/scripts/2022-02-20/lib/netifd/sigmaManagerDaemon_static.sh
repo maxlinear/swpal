@@ -72,7 +72,19 @@ all_connected_macs=""; known_disconnected_sta_Mac="no"
 while :;
 do
 	if [ "$known_disconnected_sta_Mac" = "no" ]; then
-		ret=`run_dwpal_cli_cmd -ihostap -mMain -v$interface -dd -l"AP-STA-DISCONNECTED"`
+		if [ "$OS_NAME" != "UPDK" ]; then
+			ret=`run_dwpal_cli_cmd -ihostap -mMain -v$interface -dd -l"AP-STA-DISCONNECTED"`
+		else
+			while :;
+			do
+				current_sta=`check_peerlist_on_all_vaps $1`
+				if [ "$current_sta" != "$sta_number" ]; then
+					break
+				else
+					sleep 5
+				fi
+			done
+		fi
 		current_connected_sta=`run_dwpal_cli_cmd $interface peerlist`
 
 		## leave only MACs

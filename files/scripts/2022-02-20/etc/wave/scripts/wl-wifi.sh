@@ -5,7 +5,7 @@ source /opt/intel/wave/scripts/wnc_wifi_helper.sh
 # Maxlinear version of the script.
 # Original script provided by WNC.
 # Current Version
-version="v1.1" #Important: Whenever change to new version, update the changelog in dut_print_history
+version="v1.2" #Important: Whenever change to new version, update the changelog in dut_print_history
 
 
 wifiHistory()
@@ -148,7 +148,6 @@ wifiStatus()
 #=======================================================================
 wifiCWWave()
 {
-	printInfo "wifiCWWave"
 	dut_start_cw $@
 }
 
@@ -174,7 +173,6 @@ wifiCWWave()
 #=======================================================================
 wifiRxMeasure()
 {
-	printInfo "wifiRxMeasure"
 	dut_rx_measure $@
 }
 
@@ -224,7 +222,6 @@ normalTxMode()
 #=======================================================================
 wifiTxMode()
 {
-	printInfo "wifiTxMode"
 	dut_start_tx $@
 }
 
@@ -249,7 +246,6 @@ wifiTxMode()
 #=======================================================================
 wifiRxPER()
 {
-	printInfo "wifiRxPER"
 	dut_calculate_per $@
 }
 

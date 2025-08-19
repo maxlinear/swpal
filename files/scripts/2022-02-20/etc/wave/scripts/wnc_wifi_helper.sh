@@ -11,54 +11,31 @@ rx_per_endless_loop=0
 # args: none
 init_dut_mode()
 {
+	local dut_mode=$(util_check_dut_mode_status)
+
 	# Check if dut_cli already running, if not run it and initialize all the bands to DUT mode
-	if ! pgrep -x "dut_cli" > /dev/null
-		then
-			iw dev wlan4 iwlwav gEEPROM | grep "EEPROM type   : GPIO"
-			if [ $? -eq 0 ]; then
-				mem_type=1
-				mem_size=2048
-			else
-				iw dev wlan4 iwlwav gEEPROM | grep "EEPROM type   : FILE"
-				if [ $? -eq 0 ]; then
-					mem_type=2
-					mem_size=2048
-				else
-					echo "EEPROM or FLASH doesn't contain calibration data"
-					exit 1
-				fi
-			fi
+	if [ "$dut_mode" == "false" ]; then
+		printInfo "Stopping AP Mode..."
+		util_manage_pwhm "false"
 
-			echo "Stopping dut server mode"
-			/opt/intel/wave/scripts/load_dut.sh stop
-			echo "Starting dut server mode"
-			/opt/intel/wave/scripts/load_dut.sh start
+		printInfo "Starting Test Mode..."
+		util_manage_dut_mode "true"
 
-			# wait until dutserver started
-			while true
-			do
-				if  pgrep -x "dutserver" > /dev/null
-				then
-					break;
-				else
-					sleep 0.01
-				fi
-			done
+		util_check_mem_info
+		for band in 0 2 4; do
+			echo "Initialize DUT band $band"
+			dut_send_command "exec $band driverInit --memory-type $mem_type --memory-size $mem_size"
+		done
+	fi
+}
 
-			echo "Run DUT"
-			echo "" > /tmp/dut_log
-			echo "" > /tmp/dut_commands.txt
+release_dut_mode()
+{
+	local dut_mode=$(util_check_dut_mode_status)
 
-			# Get Current br-lan IP address and run dut_cli
-			local ip_addr=$(ifconfig br-lan | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
-			tail -f -s0 /tmp/dut_commands.txt | dut_cli -l 4 -a $ip_addr >> /tmp/dut_log &
-
-			# Wait for prompt
-			util_wait_for_prompt "/tmp/dut_log"
-			for band in 0 2 4; do
-				echo "Initialize DUT band $band"
-				dut_send_command "exec $band driverInit --memory-type $mem_type --memory-size $mem_size"
-			done
+	if [ "$dut_mode" == "true" ]; then
+		printInfo "Stopping Test Mode..."
+		util_manage_dut_mode "false"
 	fi
 }
 
@@ -109,46 +86,43 @@ dut_wifi_radio_down()
 #Helper function to terminate Wi-Fi driver
 dut_wifi_terminate()
 {
-	killall -9 dut_cli
+	local dut_mode=$(util_check_dut_mode_status)
+
+	release_dut_mode
+
 	local wifi_drv_status=$(util_check_wifi_driver_status)
 	if [ "$wifi_drv_status" == "false" ]; then
-		printInfo "Wifi Driver is already de-installed"
-		exit 1
+		printInfo "Wifi Driver is already uninstalled"
+		return
 	else
 		rmmod mtlk
 		wifi_drv_status=$(util_check_wifi_driver_status)
 	fi
 
 	if [ "$wifi_drv_status" == "false" ]; then
-		printInfo "Wifi Driver is de-installed"
+		printInfo "Wifi Driver is uninstalled"
 	fi
 }
 
 #Helper function to init Wi-Fi
 dut_wifi_init()
 {
-	local dut_mode
+	local dut_mode=$(util_check_dut_mode_status)
 	local wifi_drv_status=$(util_check_wifi_driver_status)
+
 	if [ "$wifi_drv_status" == "false" ]; then
 		util_init_wifi_driver
 		wifi_drv_status=$(util_check_wifi_driver_status)
 	fi
-
-	if pgrep -x "dut_cli"
-        then
-                dut_mode="true"
-        else
-                dut_mode="false"
-        fi
 
 	if [ "$wifi_drv_status" == "true" ]; then
 		printInfo "Wifi Driver is up and Ready"
 		if [ "$dut_mode" == "false" ]; then
 			util_check_radio_status "true"
 		else
-			ifaces="wlan0 wlan2 wlan4"
-			for iface in $ifaces; do
-				util_check_iface_present $iface
+			local band
+			for band in 0 2 4; do
+				util_check_dut_band_status $band
 			done
 		fi
 	else
@@ -231,6 +205,11 @@ dut_start_tx()
 		ltf=2 # long
 	fi
 
+	if [ $ifs -lt 10 ]; then
+		printInfo "WARNING: IFS: $ifs < 10 (minimum allowed value is 10 us). Use 10 us instead"
+		ifs=10
+	fi
+
 	lowestchannel=$(util_calculate_lowest_channel $band $bw $centerchannel) || { echo "$lowestchannel"; exit 1; }
 	power=$(util_extract_powerval $4) || { echo "$power"; exit 1; }
 	ant_mask=$(util_check_ant_mask $5) || { echo "$ant_mask"; exit 1; }
@@ -258,16 +237,19 @@ dut_start_tx()
 	printInfo "channel is $1GHz[$2/$3]"
 	printInfo "Confirmed band: $1G"
 	printInfo "Confirmed protocol:$9"
+	printInfo "The protocol[$9] supports up to BW[$(util_check_max_bandwidth $band $phymode)]"
 	printInfo "Confirmed bandwidth:$3"
-	printInfo "Confirmed antsel: $ant_mask"
+	printInfo "$(util_print_antennas $ant_mask)"
+	printInfo "Confirmed antsel:$ant_mask"
+	printInfo "The protocol[$9] supports up to $(util_check_max_nss $phymode)[NSS]"
 	printInfo "The ant_sel[$ant_mask] supports up to $num_antenna[NSS]"
 	printInfo "Confirmed nss:$nss"
-	printInfo "Confirmed power:$(($power / $2))"
-	printInfo "Confirmed mcs:$mcs"
-	printInfo "Confirmed ifs:$ifs"
-	printInfo "Confirmed psdu size:$psdulen"
-	printInfo "Confirmed userOneRu:$userOneRu"
-	printInfo "Confirmed userTwoRu:$userTwoRu"
+	printInfo "Confirmed power:$(awk "BEGIN { printf \"%.1f\", $power / 2 }") dBm"
+	printInfo "Confirmed mcs:$mcs index/rate"
+	printInfo "Confirmed ifs:$ifs us"
+	printInfo "Confirmed psdu size:$psdulen byte"
+	printInfo "Confirmed RU size:${rusize:-no}"
+	printInfo "Confirmed RU location:${rulocation:-no}"
 
 	dut_send_command "exec $band setChannel --bandwidth $bw --channel $lowestchannel --phy-mode $phymode"
 	dut_send_command "exec $band setRate --bandwidth $bw --mcs $mcs --nss $nss --gi $gi --ltf $ltf"
@@ -339,15 +321,16 @@ dut_start_cw()
 	ant_mask=$(util_check_ant_mask $3) || { echo "$ant_mask"; exit 1; }
 
 	printInfo "channel is $1GHz[$2/$3]"
-	printInfo "Confirmed band: $1G"
-	printInfo "Confirmed power:$(($power / $2))"
-	printInfo "Confirmed antsel: $ant_mask"
+	printInfo "$(util_print_antennas $ant_mask)"
+	printInfo "Confirmed antsel:$ant_mask"
+	printInfo "Confirmed offset:$(awk 'BEGIN {print 312.5 * '$offset'}') kHz"
 	dut_send_command "exec $band setChannel --bandwidth $bw --channel $lowestchannel"
 	dut_send_command "exec $band setEnabledTxAntennaMask --antenna-mask $ant_mask"
 	dut_send_command "exec $band setTransmitPowerLevel --power-level $power"
 	printInfo "The minimum offset supported value is 312.5 kHz. The offset is determined by multiplying 312.5 kHz
 	by the given offset value $offset.The final offset frequency is $(awk 'BEGIN {print 312.5 * '$offset'}') kHz."
 	dut_send_command "exec $band startCw --tone $offset"
+	printInfo "[$1G][AP mode] CW test started"
 }
 
 # Stop CW wave transmission
@@ -424,6 +407,7 @@ dut_calculate_per()
 	local isfreq # Flag to indicate if channel is a frequency
 	local centerchannel
 	local num_antenna
+	local input
 
 	band=$(util_extract_band $1) || { echo "$band"; exit 1; }
 	phymode=$(util_extract_phymode $5 $band) || { echo "$phymode"; exit 1; }
@@ -457,10 +441,14 @@ dut_calculate_per()
 	printInfo "channel is $1GHz[$2/$3]"
 	printInfo "Confirmed band: $1G"
 	printInfo "Confirmed protocol:$5"
+	printInfo "The protocol[$5] supports up to BW[$(util_check_max_bandwidth $band $phymode)]"
 	printInfo "Confirmed bandwidth:$3"
-	printInfo "Confirmed antsel: $ant_mask"
+	printInfo "$(util_print_antennas $ant_mask)"
+	printInfo "Confirmed antsel:$ant_mask"
 	printInfo "Confirmed number of receive frame:$packet_count"
 	printInfo "Confirmed idle duration :$duration"
+	printInfo "rxPER Started on channel[AP mode]:[$2] bandwidth:[$3] ant sel:[$ant_mask] protocol:[$5] Number of Frame to Receive:[$packet_count] idle Duration:[$duration]"
+	printInfo "When the transmission is complete, press enter key to calculate the PER..."
 
 	dut_send_command "exec $band setChannel --bandwidth $bw --channel $lowestchannel --phy-mode $phymode"
 	dut_send_command "exec $band setEnabledTxAntennaMask --antenna-mask $ant_mask"
@@ -472,7 +460,14 @@ dut_calculate_per()
 	# If the duration is 0ms then we need to receive endlessly
 	if [ $duration -eq 0 ]; then
 		rx_per_endless_loop=1
-		sleep infinity
+		echo "==After packet transmit, enter key to calculate the PER=="
+		while true; do
+			read -r input
+			if [ -z "$input" ]; then
+				break
+			fi
+		done
+		util_handle_exit
 	else
 		# Sleep for given duration in ms
 		sleep $(awk -v var="$duration" 'BEGIN{print var * 0.001}')
@@ -502,6 +497,7 @@ dut_rx_measure()
 	local num_captures
 	local interval
 	local num_antenna
+	local input
 
 	band=$(util_extract_band $1) || { echo "$band"; exit 1; }
 	phymode=$(util_extract_phymode $5 $band) || { echo "$phymode"; exit 1; }
@@ -533,18 +529,21 @@ dut_rx_measure()
 	printInfo "channel is $1GHz[$2/$3]"
 	printInfo "Confirmed band: $1G"
 	printInfo "Confirmed protocol:$5"
+	printInfo "The protocol[$5] supports up to BW[$(util_check_max_bandwidth $band $phymode)]"
 	printInfo "Confirmed bandwidth:$3"
-	printInfo "Confirmed antsel: $ant_mask"
-	printInfo "Confirmed number of captures:$num_captures"
-	printInfo "Confirmed interval:$interval"
+	printInfo "$(util_print_antennas $ant_mask)"
+	printInfo "Confirmed antsel:$ant_mask"
+	printInfo "Confirmed number of receive frame:$num_captures"
+	printInfo "Confirmed idle duration:$interval"
 
 	# Start Rx measure handler process to listen for events
 	rx_measure_filename="/tmp/rx_measure$band.csv"
-	rm $rx_measure_filename
+	rm $rx_measure_filename > /dev/null 2>&1
 	rx_measure_handler $band &
 	handler_pid=$!
 	rx_measure_running=1
 	printInfo "Started listening for Rx Measure events. Output file name: $rx_measure_filename"
+	printInfo "Testing in Progress...."
 
 	dut_send_command "exec $band setChannel --bandwidth $bw --channel $lowestchannel --phy-mode $phymode"
 	dut_send_command "exec $band setEnabledTxAntennaMask --antenna-mask $ant_mask"
@@ -553,8 +552,21 @@ dut_rx_measure()
 	# Send Rx Measure command
 	dut_send_command "exec $band rxMeasure --num-captures $num_captures --interval $interval"
 
-	# wait for completion of event handler
-	wait $handler_pid
+	# wait or press "enter" for completion of event handler
+	printInfo "press enter key to get the result"
+	echo
+	echo "==After Tx power transmit, enter key to get the results=="
+	while true; do
+		if read -t 1 -r input; then
+			if [ -z "$input" ]; then
+				break
+			fi
+		fi
+		if ! kill -0 $handler_pid 2>/dev/null; then
+			break
+		fi
+	done
+	echo
 
 	dut_stop_rx_measure
 }
@@ -572,12 +584,99 @@ dut_stop_rx_measure()
 		# Disable Rx Measure
 		dut_send_command "exec $band getRxRateInfo"
 		dut_send_command "exec $band rxMeasure --disable"
+
+		if [ ! -f $rx_measure_filename ]; then
+			printInfo "No $rx_measure_filename found"
+			printInfo "[$(util_convert_band_to_radio $band)G] rxMeasure test stopped."
+			exit 1
+		fi
+
+		# Extract RX measurement result from csv file
+		# Get the last line
+		last_line=$(tail -n 1 "$rx_measure_filename")
+
+		# Check if the last line is the header
+		if echo "$last_line" | grep -q "ANT0_RSSI"; then
+			printInfo "No packet data available in the CSV file."
+			exit 0
+		fi
+
+		# Convert CSV to space-separated values
+		set -- $(echo "$last_line" | tr ',' ' ')
+
+		i=1
+		count=0
+		sum_rssi=0
+		sum_rcpi=0
+		sum_noise=0
+		sum_evm=0
+
+		while [ $i -le 16 ]; do
+			eval rssi=\${$i}
+			eval rcpi=\${$(($i + 1))}
+			eval noise=\${$(($i + 2))}
+			eval evm=\${$(($i + 3))}
+
+			rssi_int=$(printf "%.0f" "$rssi")
+			rcpi_int=$(printf "%.0f" "$rcpi")
+			noise_int=$(printf "%.0f" "$noise")
+			evm_int=$(printf "%.0f" "$evm")
+
+			if [ "$rssi_int" != "0" ] && [ "$rssi_int" != "-128" ]; then
+				# convert from dBm to mw
+				rssi_mw=$(awk -v dbm="$rssi_int" 'BEGIN { printf "%.15e\n", 10^(dbm / 10) }')
+				rcpi_mw=$(awk -v dbm="$rcpi_int" 'BEGIN { printf "%.15e\n", 10^(dbm / 10) }')
+				noise_mw=$(awk -v dbm="$noise_int" 'BEGIN { printf "%.15e\n", 10^(dbm / 10) }')
+				evm_mw=$(awk -v dbm="$evm_int" 'BEGIN { printf "%.15e\n", 10^(dbm / 10) }')
+
+				sum_rssi=$(awk -v a="$sum_rssi" -v b="$rssi_mw" 'BEGIN {printf "%.15f\n", a + b}')
+				sum_rcpi=$(awk -v a="$sum_rcpi" -v b="$rcpi_mw" 'BEGIN {printf "%.15f\n", a + b}')
+				sum_noise=$(awk -v a="$sum_noise" -v b="$noise_mw" 'BEGIN {printf "%.15f\n", a + b}')
+				sum_evm=$(awk -v a="$sum_evm" -v b="$evm_mw" 'BEGIN {printf "%.15f\n", a + b}')
+
+				count=$((count + 1))
+			fi
+
+			i=$((i + 4))
+		done
+
+		if [ "$count" -gt 0 ]; then
+			# calculate average in mw
+			avg_rssi_mw=$(awk -v a="$sum_rssi" -v b="$count" 'BEGIN {printf "%.15f\n", a / b}')
+			avg_rcpi_mw=$(awk -v a="$sum_rcpi" -v b="$count" 'BEGIN {printf "%.15f\n", a / b}')
+			avg_noise_mw=$(awk -v a="$sum_noise" -v b="$count" 'BEGIN {printf "%.15f\n", a / b}')
+			avg_evm_mw=$(awk -v a="$sum_evm" -v b="$count" 'BEGIN {printf "%.15f\n", a / b}')
+
+			# convert from mw to dBm
+			log10() { awk -v x=$1 'BEGIN { print log(x)/log(10) }'; }
+			avg_rssi=$(log10 $avg_rssi_mw | awk '{printf "%d", 10 * $1}')
+			avg_rcpi=$(log10 $avg_rcpi_mw | awk '{printf "%d", 10 * $1}')
+			avg_noise=$(log10 $avg_noise_mw | awk '{printf "%d", 10 * $1}')
+			avg_evm=$(log10 $avg_evm_mw | awk '{printf "%d", 10 * $1}')
+
+			printInfo "RSSI        : $avg_rssi"
+			printInfo "RCPI        : $avg_rcpi"
+			printInfo "Noise level : $avg_noise"
+			printInfo "EVM         : $avg_evm"
+		else
+			printInfo "No valid antennas found in the last row."
+		fi
+
+		printInfo "[$(util_convert_band_to_radio $band)G] rxMeasure test stopped."
 	fi
 }
 
 dut_print_history()
 {
 	# Changelog
+	printInfo "12-Jun-2025 - v1.2"
+	printInfo "- Fix 6G test mode init issue"
+	printInfo "- Fix test mode crash issue (by skipping pwhm/wld/hostapd processes in test mode)"
+	printInfo "- Added default IFS value of 10us for txMode"
+	printInfo "- Added support to stop rxMeasure/rxPER by pressing the enter key"
+	printInfo "- Modified output format of txMode, rxPER, rxMeasure, and cwwave commands"
+	printInfo
+
 	printInfo "11-Mar-2025 - v1.1"
 	printInfo "- Fix Rx Measure whole duration (num capture x interval) minimum value limitation"
 	printInfo "- Added support for CW offset parameter"
