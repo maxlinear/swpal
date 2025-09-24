@@ -321,6 +321,7 @@ util_check_radio_status() {
 util_check_cac_status()
 {
 # Get the last occurrence of "CAC started" or "CAC finished" from dmesg
+	sleep 5
 	local last_status=$(dmesg | grep -E "CAC started|CAC finished" | tail -n 1)
 
 	if echo "$last_status" | grep -q "CAC started"; then

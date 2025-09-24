@@ -136,6 +136,11 @@ restore_default_config()
 	sleep 5
 	rm -rf $ODL_FILE_PATH
 	$PWHM start
+# This is a WA done to overcome the failure of command
+# /etc/init.d/prplmesh_whm restart, should be removed once the
+# PRPL fixes this issue. Related Issues: WLANRTSYS-94931, PPW-927
+	sleep 2
+	$PWHM boot
 	sleep 10
 
 	local is_dfs_channel=`check_dfs_channel`
@@ -1325,7 +1330,7 @@ get_interface_details()
 		ap_radio_path=$CURRENT_6G_RADIO_PATH
 		ap_interface_path=$CURRENT_6G_AP_PATH
 		ap_ssid_path=$CURRENT_6G_SSID_PATH
-		[ $ap_non_tx_index = 1 ] && ap_interface_path=$CURRENT_6G_AP_PATH_2 && ap_ssid_path=$CURRENT_6G_SSID_PATH_2
+		[ "$channel_given" = "" ] && [ $ap_non_tx_index = 1 ] && ap_interface_path=$CURRENT_6G_AP_PATH_2 && ap_ssid_path=$CURRENT_6G_SSID_PATH_2
 	elif [ "$ap_cur_wlan_tag" = "5G" ] || [ "$ap_channel" -ge "36" ] || [ "$ap_interface" = "5G" ] || [ "$ap_interface" = "5.0" ]
 	then
 		ap_interface_name="5G"
@@ -1337,6 +1342,7 @@ get_interface_details()
 		ap_radio_path=$CURRENT_5G_RADIO_PATH
 		ap_interface_path=$CURRENT_5G_AP_PATH
 		ap_ssid_path=$CURRENT_5G_SSID_PATH
+		[ "$channel_given" = "" ] && [ $ap_non_tx_index = 1 ] && ap_interface_path=$CURRENT_5G_AP_PATH_2 && ap_ssid_path=$CURRENT_5G_SSID_PATH_2
 	else
 		ap_interface_name="24G"
 		ap_wlan_name=$CURRENT_24G_WLAN_NAME
@@ -1347,6 +1353,7 @@ get_interface_details()
 		ap_radio_path=$CURRENT_24G_RADIO_PATH
 		ap_interface_path=$CURRENT_24G_AP_PATH
 		ap_ssid_path=$CURRENT_24G_SSID_PATH
+		[ "$channel_given" = "" ] && [ $ap_non_tx_index = 1 ] && ap_interface_path=$CURRENT_24G_AP_PATH_2 && ap_ssid_path=$CURRENT_24G_SSID_PATH_2
 	fi
 
 	CURRENT_IFACE_NAME="$ap_interface_name"
@@ -1398,8 +1405,7 @@ add_interface()
 	last_ssid_idx=`ubus-cli 'WiFi.SSID.?' | grep Alias | sort -n | tail -1`
 	last_ssid_idx=${last_ssid_idx##*SSID.}
 	last_ssid_idx=${last_ssid_idx%%.Alias*}
-	
-	
+
 	[ "$cur_radio" == "24G" ] && local radio_idx=0
 	[ "$cur_radio" == "5G" ] && local radio_idx=2
 	[ "$cur_radio" == "6G" ] && local radio_idx=4
@@ -1413,11 +1419,11 @@ add_interface()
 
 	ret=`eval ubus call WiFi addVAPIntf \'{\"vap\"\: \"$new_wlan\", \"radio\"\: \"radio${radio_idx}\", \"bridge\"\: \"br-lan\"}\'`
 	sleep 10
-	
+
 	last_ap_idx=`ubus-cli 'WiFi.AccessPoint.?' | grep Alias | grep -v Point.1 | grep -v Point.9 | grep -v Point.17 | tail -1`
 	last_ap_idx=${last_ap_idx##*Point.}
 	new_ap_idx=${last_ap_idx%%.Alias*}
-	
+
 	new_ssid_idx=`ubus-cli 'WiFi.SSID.?' | grep Alias | grep -v SSID.1 | grep -v SSID.9 | grep -v SSID.17 | tail -1`
 	new_ssid_idx=${new_ssid_idx##*SSID.}
 	new_ssid_idx=${new_ssid_idx%%.Alias*}
@@ -1426,6 +1432,25 @@ add_interface()
 	eval CURRENT_${cur_radio}_SSID_PATH_2="WiFi.SSID.${new_ssid_idx}"
 	CURRENT_SSID_PATH_2="WiFi.SSID.${new_ssid_idx}"
 	CURRENT_AP_PATH_2="WiFi.AccessPoint.${new_ap_idx}"
+
+# This is the Workaround required to pass the TC HE-4.67.x as
+# pwhm is not generating the MAC Adresses in sequential as
+# expected in the testcase when MBSSID feature is enabled
+	if [ "$ucc_program" == "he" -a "$cur_radio" != "6G" ]; then
+		ap_mac=`ubus-cli $CURRENT_SSID_PATH.MACAddress?`
+		ap_mac=`echo $ap_mac | cut -d"=" -f2 | tr -d '"'`
+		last_oct=`echo $ap_mac | cut -d ':' -f6`
+		last_oct=$((last_oct+1))
+		[ "$cur_radio" == "24G" ] && last_oct=$((last_oct+1))
+		ap_tmp_mac=$(echo $ap_mac | awk -F":" '{print $1 ":" $2 ":" $3 ":" $4 ":" $5 ":"}')
+		ap_mac=$ap_tmp_mac$last_oct
+		ap_tmp=`ubus-cli $CURRENT_SSID_PATH.MACAddress="$ap_mac"`
+		sleep 65
+		last_oct=$((last_oct+1))
+		ap_mac=$ap_tmp_mac$last_oct
+		ap_tmp=`ubus-cli $CURRENT_SSID_PATH_2.MACAddress="$ap_mac"`
+		sleep 65
+	fi
 }
 
 create_interface()
@@ -1914,6 +1939,7 @@ check_for_reload()
 		val=`ubus-cli $ML_VAP1_PATH.Vendor.EhtMacEpcsPrioAccess?`
 		val=`echo $val | cut -d"=" -f2 | tr -d '"'`
 	fi
+	[ "$ucc_program" == "he" ] && [ -n "$global_is_vaps_created" ] && [ -n "$glob_ap_non_tx_bss_index" ] && val=1
 	echo $val
 }
 
@@ -1921,7 +1947,16 @@ ap_uci_commit_and_apply()
 {
 	ap_tmp=`check_for_reload`
 	if [ "$ap_tmp" != "1" ]; then
-		ap_tmp=`eval $WIFI_RELOAD_CMD`
+# This is a WA done to overcome the failure of command
+# /etc/init.d/prplmesh_whm restart, should be removed once the
+# PRPL fixes this issue. Related Issues: WLANRTSYS-94931, PPW-927
+		#ap_tmp=`eval $WIFI_RELOAD_CMD`
+		$PWHM stop
+		sleep 5
+		$PWHM start
+		sleep 2
+		$PWHM boot
+		sleep 10
 	fi
 	ap_tmp=`sh -c "export LD_LIBRARY_PATH=/opt/intel/lib; dwpal_cli -mMain -vwlan0.1 -vwlan2.1 -dd -l"AP-ENABLED" -l"INTERFACE_RECONNECTED_OK""`
 }
@@ -2003,8 +2038,19 @@ reload_driver_with_acceleration()
 		ap_tmp=`insmod $module_path/mtlk.ko fastpath=1,1,1 ahb_off=1 loggersid=255,255 dual_pci=1,1`
 		ap_tmp=`rm /tmp/driver_reload`
 	fi
-	
-	[ "$ucc_program" != "eht" ] && ap_tmp=`eval $WIFI_RELOAD_CMD`
+
+# This is a WA done to overcome the failure of command
+# /etc/init.d/prplmesh_whm restart, should be removed once the
+# PRPL fixes this issue. Related Issues: WLANRTSYS-94931, PPW-927
+	#[ "$ucc_program" != "eht" ] && ap_tmp=`eval $WIFI_RELOAD_CMD`
+	if [ "$ucc_program" != "eht" ]; then
+		$PWHM stop
+		sleep 5
+		$PWHM start
+		sleep 2
+		$PWHM boot
+		sleep 10
+	fi
 }
 
 enable_mld_t2lm_negotiation_support()
@@ -3220,6 +3266,8 @@ ap_set_wireless()
 	if [ "$prog_name" = "QM" ]; then
 		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SCSEnable=1"`
 		sleep 5
+		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.MSCSEnable=1"`
+		sleep 5
 	fi
 
 	if [ "$ap_program" = "HE" ] || [ "$ap_program" = "EHT" ]; then
@@ -4345,12 +4393,14 @@ ap_set_wireless()
 							[ -n "$global_ap_mbssid" ] && ret=`eval ubus call $CURRENT_SSID_PATH_2 _set \'{\"parameters\"\: {\"SSID\"\: \"$ap_ssid_non_tx_bss_index\", \"Enable\": \"1\"}}\'`
 							[ -n "$global_ap_cohosted_bss" ] && ret=`eval ubus call $CURRENT_SSID_PATH_2 _set \'{\"parameters\"\: {\"SSID\"\: \"$ap_ssid_cohosted_bss_index\", \"Enable\"\: \"1\"}}\'`
 							sleep 2
+							ret=`ubus-cli "$CURRENT_AP_PATH_2.MBOEnable=1"`
 						else
 							add_interface
 							eval `ubus call $CURRENT_SSID_PATH_2 _set '{"parameters": {"SSID": "MBSSID_VAP_${count}", "Enable": "1"}}'`
 							sleep 2
 							ret=`ubus-cli "$CURRENT_AP_PATH_2.MBOEnable=0"`
 						fi
+						sleep 5
 					done
 					if [ -n "$global_ap_mbssid" ] && [ "$global_ap_mbssid" = "enable" ]; then
 						ret=`ubus-cli "$CURRENT_RADIO_PATH.Vendor.MultibssEnable=1"`
@@ -4630,6 +4680,13 @@ ap_set_wireless()
 			set_get_helper "PLAN_FOR_${usr_index}_USER_24G" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
 			set_get_helper "PLAN_FOR_${usr_index}_USER_5G" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
 			set_get_helper "PLAN_FOR_${usr_index}_USER_6G" x$dl_usr_ul_psdu_rate_per_usp_idx=9 x$dl_usr_psdu_rate_per_usp_idx=9 x$rcr_tf_usr_psdu_rate_idx=9
+
+			string1="$CURRENT_24G_AP_PATH.Vendor.SCSEnable=${ap_eht_scs_traffic_support}"
+			string2="$CURRENT_5G_AP_PATH.Vendor.SCSEnable=${ap_eht_scs_traffic_support}"
+			string3="$CURRENT_6G_AP_PATH.Vendor.SCSEnable=${ap_eht_scs_traffic_support}"
+			string4="exit"
+			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4" | ubus-cli`
+			sleep 10
 		fi
 
 		#Re-spawn SMD in-case Preamble Puncture was enabled as the previous SMD was spawned before Preamble Puncture config reached us
@@ -5126,6 +5183,11 @@ ap_set_security()
 			NONTXBSSINDEX)
 				debug_print "ap_set_security: set ap_non_tx_bss_index=$1"
 				ap_non_tx_bss_index=$1
+				glob_ap_non_tx_bss_index=$1
+				if [ "$ap_non_tx_bss_index" == "1" ]; then
+					CURRENT_AP_PATH=$CURRENT_AP_PATH_2
+					CURRENT_SSID_PATH=$CURRENT_SSID_PATH_2
+				fi
 			;;
 			MLD_ID)
 				debug_print "set parameter ap_mld_id=$1"
@@ -6355,6 +6417,14 @@ ap_set_rfeature()
 					return
 				fi
 			;;
+			MSCS)
+				debug_print "set parameter ap_mscs_conf=$1"
+				lower "$1" ap_mscs_conf
+			;;
+			MSCSCLIENTMAC)
+				debug_print "set parameter ap_mscs_client=$1"
+				ap_mscs_client=$1
+			;;
 			*)
 				error_print "while loop error $1"
 				send_invalid ",errorCode,40"
@@ -6363,6 +6433,12 @@ ap_set_rfeature()
 		esac
 		shift
 	done
+	
+	#WLANRTSYS-90017 The command "iw dev wlanX iwlwav sDoSimpleCLI 169 1" will skip the ZLD Supp calculation that causes a timing issue when we are using basic TF
+	if [ "$glob_ssid" = "HE-4.62.1_5G" ] || [ "$glob_ssid" = "HE-4.62.1_24G" ]; then
+		iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 169 1
+		sleep 2
+	fi
 
 	if [ "$global_ap_epcs_frame" = "unsolicitedauthorize" ]; then
 		debug_print " going to trigger unsolicitedauthorize"
@@ -7774,6 +7850,7 @@ ap_set_rfeature()
 			# Ack Policy set to Unicast TF Basic
 			if [ "$ap_trigger_type" = "0" ]; then
 				ap_sequence_type=2  #HE_MU_SEQ_DL_BASIC_TF
+				is_activate_sigmaManagerDaemon=0	#Disabling sigma manager daemon to avoid sending static plan twice. 
 			fi
 		;;
 		*)
@@ -8685,6 +8762,10 @@ ap_set_rfeature()
 		done
 	fi
 
+	if [ "$ap_type" == "QM" ] && [ "$ap_mscs_conf" == "teardownclient" ] && [ -n "$ap_mscs_client" ]; then
+		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME mscs_remove $ap_mscs_client`
+	fi
+
 	if [ "$ap_type" = "EHT" ] && [ "$glob_ofdma_phase_format" != "" ]; then
 		[ "$ML_VAP1" = "5G" ] && refresh_static_plan_for_eht $CURRENT_6G_WLAN_NAME $CURRENT_6G_IFACE_NAME
 		refresh_static_plan_for_eht $CURRENT_5G_WLAN_NAME $CURRENT_5G_IFACE_NAME
@@ -8814,6 +8895,13 @@ dev_send_frame()
 			;;
 			STA_MLD)
 				sta_mld=$1
+			;;
+			SCSDESCRELEM_SCSID_1)
+				ap_scs_descr_elem_id=$1
+			;;
+			SCSDESCRELEM_REQUESTTYPE_1)
+				lower "$1" ap_scs_descr_request_type
+				[ "$ap_scs_descr_request_type" == "remove" ] && ap_scs_descr_request_type=1
 			;;
 			*)
 				error_print "while loop error $1"
@@ -9049,6 +9137,10 @@ dev_send_frame()
 			debug_print $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME SEND_T2LM_TEARDOWN_FRAME $CURRENT_AP_NAME $ap_dest_mac
 			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME SEND_T2LM_TEARDOWN_FRAME $CURRENT_AP_NAME $ap_dest_mac`
 		;;
+		SCSResp)
+			debug_print "$HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME scs_remove $ap_dest_mac $ap_scs_descr_elem_id $ap_scs_descr_request_type"
+			ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME scs_remove $ap_dest_mac $ap_scs_descr_elem_id $ap_scs_descr_request_type`
+		;;
 		*)
 			error_print "not supported frame_name $ap_frame_name"
 			send_invalid ",errorCode,500"
@@ -9217,6 +9309,23 @@ ap_config_commit()
 	#This is a workaround for WLANRTSYS-62397 where in HE-4.5.3_5G TC ping fails for Marvell station.
 	#By disabling prplmesh, ping is successful for Marvell station, hence disabling prplmesh.
 	ap_tmp=`eval /opt/prplmesh/scripts/prplmesh_utils.sh stop`
+	
+	#WLANRTSYS-89971 - The command 'sDoSimpleCLI 3 69' will change link adaptation to Fast Init Mode. With this configuration, every second TXOP will be probing, and after one sample, the WP will change
+	if [ "$glob_ssid" = "HE-4.52.1" ] || [ "$glob_ssid" = "HE-4.52.1_24G" ]; then
+		iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 3 69
+		sleep 2
+	fi
+	
+	#WLANRTSYS-89999 - Once MRU logic is enabled the preAgg does not reduce the BW for the station according to the OM command and as a result preAgg drops the station and transmit to a dummy user. To avoid this issue send 'iw dev wlanX iwlwav sDoSimpleCLI 3 68 0 0' command which will reduce BW in the plan in case of single station and MRU logic enable
+	if [ "$glob_ssid" = "HE-4.58.1_5G" ]; then
+		iw dev $CURRENT_WLAN_NAME iwlwav sDoSimpleCLI 3 68 0 0
+		sleep 2
+	fi
+
+	if [ "$ucc_program" = "qm" ]; then
+		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME set_qos_map_set "8,1,23,0,31,0,39,0,40,5,0,16,255,255,255,255,17,22,23,43,255,255,44,47,48,63"`
+	fi
+
 
 	send_complete
 }
@@ -10358,8 +10467,9 @@ ap_get_mac_address()
 		fi
 		send_complete ",AP-MLD mac,$ap_mld_mac_address"
 	else
-		ap_mac=`ubus-cli $CURRENT_SSID_PATH.BSSID?`
+		ap_mac=`ubus-cli $CURRENT_SSID_PATH.MACAddress?`
 		ap_mac=`echo $ap_mac | cut -d"=" -f2 | tr -d '"'`
+		lower "$ap_mac" ap_mac
 		send_complete ",mac,$ap_mac"
 	fi
 }
@@ -10543,6 +10653,57 @@ device_get_info()
 	send_complete ",vendor,$VENDOR,model,$MODEL,version,$WAVE_VERSION"
 }
 
+ap_set_qos()
+{
+	ap_name="Maxlinear"
+	IFS=$ORIG_IFS
+	send_running
+
+	get_interface_details $@
+
+	if [ "$CURRENT_AP_PATH" = "" ]; then
+		debug_print "Can't obtain uci path"
+	fi
+
+	while [ "$1" != "" ]; do
+		# for upper case only
+		upper "$1" token
+		shift
+		debug_print "while loop $1 - token:$token"
+		case "$token" in
+			QOS_MAP_SET)
+				debug_print "Setting the ap_qos_map_set=$1"
+				ap_qos_map_set=$1
+			;;
+			STA_MAC)
+				debug_print "Setting the ap_sta_mac=$1"
+				ap_sta_mac=$1
+			;;
+		esac
+		shift
+	done
+
+	if [ "$ap_qos_map_set" == 1 ]; then
+		ap_qos_map="53,2,22,6,8,15,0,7,255,255,16,31,32,39,255,255,40,47,255,255"
+	fi
+
+	if [ "$ap_qos_map_set" == 2 ]; then
+		ap_qos_map="8,15,0,7,255,255,16,31,32,39,255,255,40,47,48,63"
+	fi
+
+	if [ -n "$ap_sta_mac" ]; then
+		ap_cmd=`eval ubus call $CURRENT_AP_PATH.Vendor updateQoSMap \'{\"QoSMap\"\: \"$ap_qos_map\"\'`
+		sleep 5
+		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME set_qos_map_set $ap_qos_map`
+		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME send_qos_map_conf $ap_sta_mac`
+	else
+		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.QoSMap='${ap_qos_map}'"`
+	fi
+	sleep 5
+
+	send_complete
+}
+
 ##### Parser #####
 
 parse_command()
@@ -10563,6 +10724,7 @@ parse_command()
 		error_print "ap_set_pmf, ap_set_statqos, ap_set_radius, ap_set_hs2, ap_reboot, ap_config_commit,"
 		error_print "ap_reset_default, ap_get_info, ap_deauth_sta, ap_get_mac_address, ap_set_rfeature"
 		error_print "ap_send_addba_req, dev_send_frame, device_get_info, ap_get_parameter, dev_exec_action"
+		error_print "ap_set_qos"
 	fi
 	cmd=""
 	return
@@ -11948,8 +12110,8 @@ send_plan_for_4_users()
 	fi
 	
 	ofdma_type=`get_index_from_db "PLAN_COMMON_${CURRENT_IFACE_NAME}" x$dl_com_phases_format_idx`
-	#Configuring MU Sequence type in static plan to MU-BAR (0) for all 4 user DL OFDMA test cases as per WLANRTSYS-89198
-	if [ "$mu_type" = "0" ] && [ "$ofdma_type" = "0" ]; then
+	#Configuring MU Sequence type in static plan to MU-BAR (0) for all 4 user DL OFDMA test cases except TC where trigger type is explicitly provided as per WLANRTSYS-89198
+	if [ -z $ap_sequence_type ] && [ "$mu_type" = "0" ] && [ "$ofdma_type" = "0" ]; then
 		Dynamic_set_get_helper "iw_off" $CURRENT_WLAN_NAME "PLAN_COMMON_${CURRENT_IFACE_NAME}" x2=0
 	fi
 
