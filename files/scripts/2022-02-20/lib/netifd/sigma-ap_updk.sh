@@ -9322,10 +9322,9 @@ ap_config_commit()
 		sleep 2
 	fi
 
-	if [ "$ucc_program" = "qm" ]; then
+	if [ "$ucc_program" = "qm" ] && [ "$glob_qos_map_set" = "" ]; then
 		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME set_qos_map_set "8,1,23,0,31,0,39,0,40,5,0,16,255,255,255,255,17,22,23,43,255,255,44,47,48,63"`
 	fi
-
 
 	send_complete
 }
@@ -10674,6 +10673,7 @@ ap_set_qos()
 			QOS_MAP_SET)
 				debug_print "Setting the ap_qos_map_set=$1"
 				ap_qos_map_set=$1
+				glob_qos_map_set=$1
 			;;
 			STA_MAC)
 				debug_print "Setting the ap_sta_mac=$1"
