@@ -140,6 +140,12 @@ util_manage_pwhm()
 		printInfo "Waiting for 20 seconds to get interfaces up and running"
 		sleep 20
 	else
+		if ! pgrep "wld" > /dev/null
+		then
+			printInfo "pwhm is not running"
+			return
+		fi
+
 		# Stop pwhm before entering DUT mode
 		/etc/init.d/prplmesh_whm stop
 		printInfo "Waiting for 10 sec to stop pwhm"
@@ -321,6 +327,7 @@ util_check_radio_status() {
 util_check_cac_status()
 {
 # Get the last occurrence of "CAC started" or "CAC finished" from dmesg
+	sleep 5
 	local last_status=$(dmesg | grep -E "CAC started|CAC finished" | tail -n 1)
 
 	if echo "$last_status" | grep -q "CAC started"; then

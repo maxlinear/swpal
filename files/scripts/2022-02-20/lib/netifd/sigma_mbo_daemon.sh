@@ -4,17 +4,17 @@
 
 kill_dwpal_cli()
 {
-        event1="AP-STA-WNM-NOTIF"
-        event2="RRM-BEACON-REP-RECEIVED"
+		event1="AP-STA-WNM-NOTIF"
+		event2="RRM-BEACON-REP-RECEIVED"
 		if [ "$OS_NAME" = "UPDK" ]; then
 			all_event=`ps -ef | grep -e $event1 -e $event2 | awk '{print $2}'`
 		else
 			all_event=`ps -w | grep -e $event1 -e $event2 | awk '{print $1}'`
 		fi
-        for pid in $(echo "$all_event" | head -n -1)
-        do
-                kill -9 $pid
-        done
+		for pid in $(echo "$all_event" | head -n -1)
+		do
+			kill -9 $pid
+		done
 }
 
 if [ "$OS_NAME" = "UPDK" ]; then
@@ -54,4 +54,5 @@ do
 		debug_print "sigma_mbo_handler event received = $event"
 		mbo_handler $event
 	fi
+
 done

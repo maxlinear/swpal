@@ -3107,6 +3107,14 @@ ap_set_wireless()
 			debug_print "set parameter ap_rnr_tbtt_res=$1"
 			lower "$1" ap_rnr_tbtt_res
 		;;
+		EMLSR_ONELINK_SUPPORT)
+			debug_print "set parameter emlsr_onelink_support=$1"
+			lower "$1" emlsr_onelink_support
+			ap_get_debug_hostap_conf=`grep 'eml_capab_transition_timeout' $ETC_CONFIG_WIRELESS_PATH | awk '{print $2}' | sort -u`
+			$UCI_CMD set $CURRENT_6G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="eml_capab_transition_timeout=8"
+			$UCI_CMD set $CURRENT_5G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="eml_capab_transition_timeout=8"
+			$UCI_CMD set $CURRENT_24G_IFACE_UCI_PATH.$ap_get_debug_hostap_conf="eml_capab_transition_timeout=8"
+		;;
 		*)
 			error_print "while loop error $1"
 			send_invalid ",errorCode,2"
@@ -8923,6 +8931,14 @@ dev_send_frame()
 			STA_MLD)
 				sta_mld=$1
 			;;
+			RNRIE)
+				rnr_ie=$1
+				if [ $rnr_ie = 1 ]; then
+					rnr_ie_val=201
+				elif [ $rnr_ie = 0 ]; then
+					rnr_ie_val=""
+				fi
+			;;
 			*)
 				error_print "while loop error $1"
 				send_invalid ",errorCode,500"
@@ -9006,6 +9022,9 @@ dev_send_frame()
 			if [ "$ap_reqinfo" != "" ]; then
 				# replace all "_" with "," in received string
 				ap_reqinfo_param="${ap_reqinfo//_/,}"
+				if [ "$rnr_ie_val" != "" ]; then
+					ap_reqinfo_param="${ap_reqinfo_param},${rnr_ie_val}"
+				fi
 				ap_beacon_req_params=$ap_beacon_req_params" req_elements=$ap_reqinfo_param"
 			fi
 
@@ -9337,6 +9356,17 @@ ap_config_commit()
 	#This is a workaround for WLANRTSYS-62397 where in HE-4.5.3_5G TC ping fails for Marvell station.
 	#By disabling prplmesh, ping is successful for Marvell station, hence disabling prplmesh.
 	/etc/init.d/prplmesh stop
+	
+	if [ -n "$emlsr_onelink_support" ]; then
+		debug_print "Configuring EMLSR one link support to $emlsr_onelink_support"
+		if [ "$emlsr_onelink_support" = "enable" ]; then
+			ap_temp=`eval $HOSTAPD_CLI_CMD -iwlan0 emlsr_single_link 1`
+		elif [ "$emlsr_onelink_support" = "disable" ]; then
+			ap_temp=`eval $HOSTAPD_CLI_CMD -iwlan0 emlsr_single_link 0`
+		else
+			error_print "Error: Invalid input for the variable emlsr_onelink_support"
+		fi
+	fi
 
 	send_complete
 }

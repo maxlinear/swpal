@@ -18,19 +18,13 @@ static int xsocket_type(len_and_sockaddr **lsap, int family, int sock_type)
 
 	fd = socket(family, sock_type, 0);
 
-	if(fd == -1) {
-		return -1;
-	}
-
 	len = sizeof(struct sockaddr_in);
 	if (family == AF_UNIX)
 		len = sizeof(struct sockaddr_un);
 
 	lsa = malloc(LSA_LEN_SIZE + len);
-	if (lsa == NULL) {
-		close(fd);
+	if (lsa == NULL)
 		return -1;
-	}
 
 	memset((char*)lsa, '\0', LSA_LEN_SIZE + len);
 
