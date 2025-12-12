@@ -140,6 +140,12 @@ util_manage_pwhm()
 		printInfo "Waiting for 20 seconds to get interfaces up and running"
 		sleep 20
 	else
+		if ! pgrep "wld" > /dev/null
+		then
+			printInfo "pwhm is not running"
+			return
+		fi
+
 		# Stop pwhm before entering DUT mode
 		/etc/init.d/prplmesh_whm stop
 		printInfo "Waiting for 10 sec to stop pwhm"
