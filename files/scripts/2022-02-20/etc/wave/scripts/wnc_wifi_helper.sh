@@ -231,7 +231,7 @@ dut_start_tx()
 	fi
 
 	if [ $repetition -eq 0 ]; then
-		repetition=65535	# Continuous transmission
+		repetition=65532	# Block Detection Continuous transmission
 	fi
 
 	printInfo "channel is $1GHz[$2/$3]"

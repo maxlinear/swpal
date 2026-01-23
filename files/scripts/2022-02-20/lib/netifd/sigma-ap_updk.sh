@@ -1334,10 +1334,15 @@ get_interface_details()
 		then
 			eval CURRENT_WLAN_TAG${ap_ucc_wlan_tag}=5G
 		fi
+		[ "$BASE_TAG_5G" = "" ] && BASE_TAG_5G="$ap_wlan_tag"
+		ap_wlan_tag=$((ap_wlan_tag-BASE_TAG_5G))
 		ap_radio_path=$CURRENT_5G_RADIO_PATH
 		ap_interface_path=$CURRENT_5G_AP_PATH
 		ap_ssid_path=$CURRENT_5G_SSID_PATH
-		[ "$channel_given" = "" ] && [ $ap_non_tx_index = 1 ] && ap_interface_path=$CURRENT_5G_AP_PATH_2 && ap_ssid_path=$CURRENT_5G_SSID_PATH_2
+		[ "$ap_wlan_tag" -gt "0" ] && [ "$ap_cur_wlan_tag" == "" ] && add_interface $ap_radio_path
+		if [ "$channel_given" = "" -a  $ap_non_tx_index = 1 ] || [ "$ap_wlan_tag" -gt "0" ]; then
+			ap_interface_path=$CURRENT_5G_AP_PATH_2 && ap_ssid_path=$CURRENT_5G_SSID_PATH_2
+		fi
 	else
 		ap_interface_name="24G"
 		ap_wlan_name=$CURRENT_24G_WLAN_NAME
@@ -1387,7 +1392,7 @@ get_new_wlan_name_for_radio()
 add_interface()
 {
 	if [ "$1" != "" ]; then
-		local cur_radio_path=wireless.$1
+		local cur_radio_path=$1
 	else
 		local cur_radio_path=$CURRENT_RADIO_PATH
 	fi
@@ -1450,42 +1455,6 @@ add_interface()
 		ap_mac=$ap_tmp_mac$last_oct
 		ap_tmp=`ubus-cli $CURRENT_SSID_PATH_2.MACAddress="$ap_mac"`
 		sleep 65
-	fi
-}
-
-create_interface()
-{
-	debug_print create_interface $*
-
-	ap_uci_vap_idx=$(echo $CURRENT_IFACE_UCI_PATH | sed -e 's/[^0-9 ]//g')
-	ap_uci_base_idx=$((ap_uci_vap_idx-ap_wlan_tag))
-
-	ap_base_mac=`$UCI_CMD get wireless.default_radio${ap_uci_base_idx}.macaddr`
-	ap_flex_mac_hexa=$(echo $ap_base_mac | awk -F":" '{print $6}')
-	ap_flex_mac="0x$ap_flex_mac_hexa"
-	ap_new_flex_mac=$(printf '%x' $((ap_flex_mac + 2*ap_wlan_tag)))
-	ap_new_flex_mac_len=${#ap_new_flex_mac}
-
-	if [ $ap_new_flex_mac_len -eq 1 ]; then
-		ap_new_flex_mac="0$ap_new_flex_mac"
-	elif [ $ap_new_flex_mac_len -gt 2 ]; then
-		ap_new_flex_mac=$(echo -n $ap_new_flex_mac | tail -c 2)
-	fi
-
-	ap_part_mac=$(echo $ap_base_mac | awk -F":" '{print $1 ":" $2 ":" $3 ":" $4 ":" $5 ":"}')
-	ap_mew_mac="$ap_part_mac$ap_new_flex_mac"
-
-	ap_radio_name=$(echo $CURRENT_RADIO_UCI_PATH | awk -F"." '{print $2}')
-
-	$UCI_CMD set $CURRENT_IFACE_UCI_PATH='wifi-iface'
-	$UCI_CMD set $CURRENT_IFACE_UCI_PATH.device=$ap_radio_name
-	$UCI_CMD set $CURRENT_IFACE_UCI_PATH.ifname=$CURRENT_WLAN_NAME.$ap_wlan_tag
-	$UCI_CMD set $CURRENT_IFACE_UCI_PATH.macaddr=$ap_mew_mac
-	$UCI_CMD set $CURRENT_IFACE_UCI_PATH.mode='ap'
-	$FACTORY_CMD vap $CURRENT_WLAN_NAME.$ap_wlan_tag
-	if [ "$MODEL" != "AX11000" ] && [ "$MODEL" != "WAV700_AP" ] && [ "$OS_NAME" = "UGW" ]; then
-		chown rpcd:rpcd $UCI_DB_PATH/wireless
-		chmod +r $UCI_DB_PATH/wireless
 	fi
 }
 
@@ -2497,6 +2466,11 @@ ap_set_wireless()
 					send_invalid ",errorCode,220"
 					return
 				fi
+
+				if [ "$global_has_11n" == "1" -o "$global_has_pmf" == "1" -o "$global_has_wpa2" == "1" -o "$global_has_wmmps" == "1" -o "$global_has_vht" == "1" -o "$global_has_wpa3" == "1" -o "$global_has_mbo" == "1" ]; then
+					ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=0"`
+					sleep 4
+				fi
 			fi
 		;;
 		P2PMGMTBIT)
@@ -3260,13 +3234,6 @@ ap_set_wireless()
 	# txop will be disabled for all WiFi6R2 2.4G test cases with UL OFDMA.
 	if [ "$is_wifi6r2_2gtc" = "True" ] && [ "$glob_ap_ofdma" = "ul" ] && [ "$ucc_type" = "dut" ]; then
 		iw dev wlan0 iwlwav sTxopConfig 511 0 500 4  	#Disable TXOP
-	fi
-
-	if [ "$prog_name" = "QM" ]; then
-		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.SCSEnable=1"`
-		sleep 5
-		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.MSCSEnable=1"`
-		sleep 5
 	fi
 
 	if [ "$ap_program" = "HE" ] || [ "$ap_program" = "EHT" ]; then
@@ -5037,11 +5004,28 @@ ap_set_security()
 			;;
 			WLAN_TAG)
 				# skip as it is determined in get_interface_details
+				ap_sec_wlan_tag=$1
+				if [ "$ap_sec_wlan_tag" == "2" -a "$glob_ssid" == "Open" ]; then
+					string1="$CURRENT_AP_PATH.SSIDAdvertisementEnabled=0"
+					string2="$CURRENT_AP_PATH.Enable=1"
+					string3="exit"
+
+					ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
+					sleep 5
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.HiddenSSIDType=1"`
+					sleep 5
+				fi
 			;;
 			KEYMGNT)
 				debug_print "set parameter ap_keymgnt=$1"
 				ap_keymgnt=$1
 				ap_sae_ext=0
+				if [ "$ap_sec_wlan_tag" == "1" ]; then
+					OWE_MAC=`ubus-cli $CURRENT_SSID_PATH.MACAddress?`
+					OWE_MAC=`echo $OWE_MAC | cut -d"=" -f2 | tr -d '"'`
+					OWE_AP_PATH=$CURRENT_AP_PATH
+					OWE_SSID_PATH=$CURRENT_SSID_PATH
+				fi
 				if [ "$ucc_program" = "eht" ] && [ ! -e "/tmp/sae_override" ]; then
 					ap_uci_security_mode="WPA3-Personal"
 					ap_sae_ext=1
@@ -5079,6 +5063,16 @@ ap_set_security()
 				fi
 				if [ "$ucc_program" != "eht" ] && [ "$ap_uci_security_mode" = "WPA3-Personal" ]; then
 					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.ApProtectedKeepAliveRequired=1"`
+				fi
+				if [ "$ap_sec_wlan_tag" == "2" ] && [ "$ap_uci_security_mode" == "OWE" -a "$glob_ssid" == "Open" ]; then
+					ap_mac=`ubus-cli $CURRENT_SSID_PATH.MACAddress?`
+					ap_mac=`echo $ap_mac | cut -d"=" -f2 | tr -d '"'`
+					ap_ssid=`ubus-cli $CURRENT_SSID_PATH.SSID?`
+					ap_ssid=`echo $ap_ssid | cut -d"=" -f2 | tr -d '"'`
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.OWETransitionSSID=$glob_ssid"`
+					ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.OWETransitionBSSID=$OWE_MAC"`
+					ret=`ubus-cli "$OWE_AP_PATH.Vendor.OWETransitionSSID=$ap_ssid"`
+					ret=`ubus-cli "$OWE_AP_PATH.Vendor.OWETransitionBSSID=$ap_mac"`
 				fi
 				sleep 10
 			;;
@@ -9374,6 +9368,40 @@ ap_config_commit()
 		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME set_qos_map_set "8,1,23,0,31,0,39,0,40,5,0,16,255,255,255,255,17,22,23,43,255,255,44,47,48,63"`
 	fi
 
+	#WLANRTSYS-83380 This is a workaround for STA not sending TID5 ADDBA REQ in VHT-4.2.29
+	if [ "$glob_ssid" == "VHT-4.2.29-None" ] || [ "$glob_ssid" == "VHT-4.2.29-PSK" ]; then
+		send_complete
+
+		local timeout=0
+		local interval=3
+		local max_timeout=60
+
+		while [ $timeout -lt $max_timeout ]; do
+			VHT_STA_MAC=$(dwpal_cli wlan2.1 peerlist | grep -oE '([0-9A-F]{2}:){5}[0-9A-F]{2}')
+
+			if [ -n "$VHT_STA_MAC" ]; then
+				break
+			else
+				sleep $interval
+				timeout=$((timeout + interval))
+			fi
+		done
+
+		if [ -z "$VHT_STA_MAC" ]; then
+			return 0
+		fi
+
+		APUT_IP=$(ubus-cli IP.Interface.3.IPv4Address.1.IPAddress? | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+		for i in $(seq 1 254); do
+			ping -c 1 -W 1 "${APUT_IP}.$i" > /dev/null 2>&1 &
+		done
+		wait
+
+		VHT_STA_IP=$(cat /proc/net/arp | grep -i "$VHT_STA_MAC" | awk '{print $1}')
+		ap_temp=`eval ping -c 1 -Q 184 "$VHT_STA_IP" 2>&1`
+		return 0
+	fi
+
 	send_complete
 }
 
@@ -9404,6 +9432,8 @@ ap_load_radio_config()
 		global_has_vht=1
 	elif [ "$1" == "mbo" ]; then
 		global_has_mbo=1
+	elif [ "$1" == "qm" ]; then
+		global_has_qm=1
 	elif [ "$1" == "wmmps" ]; then
 		global_has_wmmps=1
 	fi
@@ -9488,6 +9518,27 @@ ap_load_radio_config()
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
 		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Vendor.Country3='0x04'"`
+		sleep 7
+	fi
+
+	if [ "$global_has_qm" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_6G_RADIO_PATH.Enable=0"`
+		sleep 4
+
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.Channel=36"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingStandards='an'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_5G_RADIO_PATH.commit()"`
+		sleep 7
+
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.edit()"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.Channel=6"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingStandards='gn'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.RegulatoryDomain='US'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.OperatingChannelBandwidth='20MHz'"`
+		ret=`ubus-cli "$CURRENT_24G_RADIO_PATH.commit()"`
 		sleep 7
 	fi
 
@@ -10027,6 +10078,8 @@ ap_load_vap_config()
 		global_has_vht=1
 	elif [ "$1" == "mbo" ]; then
 		global_has_mbo=1
+	elif [ "$1" == "qm" ]; then
+		global_has_qm=1
 	elif [ "$1" == "wmmps" ]; then
 		global_has_wmmps=1
 	fi
@@ -10035,10 +10088,12 @@ ap_load_vap_config()
 	if [ "$global_has_11n" == "1" -o "$global_has_pmf" == "1" -o "$global_has_wpa2" == "1" ]; then
 		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
 		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.VendorVht=0"`
 		sleep 3
 
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA2-Personal'"`
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.VendorVht=0"`
 		sleep 3
 	fi
 
@@ -10073,6 +10128,26 @@ ap_load_vap_config()
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='MBORocks'"`
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.RrmNeighRpt=1"`
 		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.WnmBssTransQueryAutoresp=1"`
+		sleep 3
+	fi
+
+	if [ "$global_has_qm" == "1" ]; then
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.VendorVht=0"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.MSCSEnable=1"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.Vendor.SCSEnable=1"`
+		ret=`ubus-cli "$CURRENT_5G_AP_PATH.MBOEnable=0"`
+		sleep 3
+
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.ModeEnabled='WPA3-Personal'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.KeyPassPhrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Security.SAEPassphrase='12345678'"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.VendorVht=0"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.MSCSEnable=1"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.Vendor.SCSEnable=1"`
+		ret=`ubus-cli "$CURRENT_24G_AP_PATH.MBOEnable=0"`
 		sleep 3
 	fi
 
@@ -10279,6 +10354,11 @@ ap_wpa3_reset_default()
 	ap_common_reset_default wpa3
 }
 
+ap_qm_reset_default()
+{
+	ap_common_reset_default qm
+}
+
 ap_pmf_reset_default()
 {
 	ap_common_reset_default pmf
@@ -10348,10 +10428,12 @@ ap_reset_default()
 		ap_wpa2_reset_default
 	elif [ "$ucc_program" = "wpa3" ]; then
 		ap_wpa3_reset_default
+	elif [ "$ucc_program" = "qm" ]; then
+		ap_qm_reset_default
 	elif [ "$ucc_program" = "pmf" ]; then
 		ap_pmf_reset_default
-	elif [ "$ucc_program" = "eht" ] || [ "$ucc_program" = "qm" ] ; then
-		if [ "$ap_runtime_id" = "" ] ; then
+	elif [ "$ucc_program" = "eht" ]; then
+		if [ "$ap_runtime_id" = "" ]; then
 			if [ "$ucc_type" = "dut" ]; then
 				ap_eht_reset_default
 			else
@@ -10742,8 +10824,8 @@ ap_set_qos()
 	if [ -n "$ap_sta_mac" ]; then
 		ap_cmd=`eval ubus call $CURRENT_AP_PATH.Vendor updateQoSMap \'{\"QoSMap\"\: \"$ap_qos_map\"}\'`
 		sleep 5
-		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME set_qos_map_set $ap_qos_map`
-		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_WLAN_NAME send_qos_map_conf $ap_sta_mac`
+		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME set_qos_map_set $ap_qos_map`
+		ap_tmp=`eval $HOSTAPD_CLI_CMD -i$CURRENT_AP_NAME send_qos_map_conf $ap_sta_mac`
 	else
 		ret=`ubus-cli "$CURRENT_AP_PATH.Vendor.QoSMap='${ap_qos_map}'"`
 	fi

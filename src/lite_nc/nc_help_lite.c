@@ -23,8 +23,13 @@ static int xsocket_type(len_and_sockaddr **lsap, int family, int sock_type)
 		len = sizeof(struct sockaddr_un);
 
 	lsa = malloc(LSA_LEN_SIZE + len);
-	if (lsa == NULL)
+	if (lsa == NULL) {
+		// Close the socket if not used
+		if (fd >= 0) {
+			close(fd);
+		}
 		return -1;
+	}
 
 	memset((char*)lsa, '\0', LSA_LEN_SIZE + len);
 
