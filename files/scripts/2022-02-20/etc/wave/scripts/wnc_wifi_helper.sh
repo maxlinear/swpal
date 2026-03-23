@@ -117,14 +117,7 @@ dut_wifi_init()
 
 	if [ "$wifi_drv_status" == "true" ]; then
 		printInfo "Wifi Driver is up and Ready"
-		if [ "$dut_mode" == "false" ]; then
-			util_check_radio_status "true"
-		else
-			local band
-			for band in 0 2 4; do
-				util_check_dut_band_status $band
-			done
-		fi
+		util_manage_wifi_radio "true"
 	else
 		printInfo "ERROR: Wifi Driver is not running"
 	fi

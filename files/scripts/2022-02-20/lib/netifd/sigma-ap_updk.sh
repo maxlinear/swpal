@@ -13,7 +13,7 @@ if [ -f $USER_INPUT_FILE ]; then
 	. $USER_INPUT_FILE
 fi
 
-WIFI_RELOAD_CMD="/etc/init.d/prplmesh_whm restart ; sleep 25"
+WIFI_RELOAD_CMD="/etc/init.d/prplmesh_whm restart ; sleep 30"
 MODEL="WAV700_AP"
 
 ORIG_IFS=$IFS
@@ -133,10 +133,10 @@ restore_default_config()
 	debug_print "Restore the hostapd config to default"
 
 	$PWHM stop
-	sleep 5
+	sleep 15
 	rm -rf $ODL_FILE_PATH
 	$PWHM start
-	sleep 10
+	sleep 30
 
 	local is_dfs_channel=`check_dfs_channel`
 	[ "$is_dfs_channel" == "1" ] && sleep 65
