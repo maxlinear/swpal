@@ -65,12 +65,12 @@ SEND_IW_WLAN4="iw dev wlan4 iwlwav"
 CURRENT_5G_RADIO_PATH="WiFi.Radio.2"
 CURRENT_24G_RADIO_PATH="WiFi.Radio.1"
 CURRENT_6G_RADIO_PATH="WiFi.Radio.3"
-CURRENT_5G_AP_PATH="WiFi.AccessPoint.10"
+CURRENT_5G_AP_PATH="WiFi.AccessPoint.8"
 CURRENT_24G_AP_PATH="WiFi.AccessPoint.1"
-CURRENT_6G_AP_PATH="WiFi.AccessPoint.18"
-CURRENT_5G_SSID_PATH="WiFi.SSID.10"
+CURRENT_6G_AP_PATH="WiFi.AccessPoint.15"
+CURRENT_5G_SSID_PATH="WiFi.SSID.8"
 CURRENT_24G_SSID_PATH="WiFi.SSID.1"
-CURRENT_6G_SSID_PATH="WiFi.SSID.18"
+CURRENT_6G_SSID_PATH="WiFi.SSID.15"
 CURRENT_6G_SSID_PATH_2=""
 CURRENT_5G_SSID_PATH_2=""
 CURRENT_24G_SSID_PATH_2=""
@@ -156,26 +156,32 @@ restore_default_config()
 		ret=`ubus call WiFi delVAPIntf '{"vap": "vap6g0guest"}'`
 		sleep 4
 	else
-		# Clear the extra VAPs(wlan2.2 - wlan2.8, wlan0.2 - wlan0.8 and wlan4.2 - wlan4.8) attached to br-guest
-		for i in 2 17 25
-		do
-			ret=`ubus call WiFi.AccessPoint.$i _set '{"parameters": {"Enable": "0"}}'`
-			sleep 3
-		done
+		VAP_OBJ_ID_FILE="/tmp/vap_obj_id_file"
+		ubus-cli 'WiFi.AccessPoint.?' | grep CustomAlias > $VAP_OBJ_ID_FILE
+		sed -i 's/WiFi.AccessPoint.//g' $VAP_OBJ_ID_FILE
+		last_vap_idx=`sort -V $VAP_OBJ_ID_FILE | tail -1`
+		last_vap_idx=${last_vap_idx%%.CustomAlias*}
+		rm -rf $VAP_OBJ_ID_FILE
 
-		for i in 2 3 4 5 6 7 8
+		i=1
+		while [ $i -le $last_vap_idx ]
 		do
-			ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe2gssid${i}\"}\'`
-			sleep 4
-			ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe5gssid${i}\"}\'`
-			sleep 4
-			ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe6gssid${i}\"}\'`
-			sleep 4
+			case "$i" in
+				1|8|15)
+					;;
+				*)
+					ret=`ubus call WiFi.AccessPoint.$i _set '{"parameters": {"Enable": "0"}}'`
+					sleep 3
+					j=$i
+					[ $j -gt 25 ] && j=$((j+10))
+					vap_name=`ubus-cli WiFi.SSID.$j.Alias?`
+					vap_name=`echo $vap_name | cut -d"=" -f2 | tr -d '"'`
+					ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"$vap_name\"}\'`
+					sleep 4
+					;;
+			esac
+			i=$((i + 1))
 		done
-		ret=`ubus call WiFi.AccessPoint.9 _set '{"parameters": {"Enable": "0"}}'`
-		sleep 3
-		ret=`eval ubus call WiFi delVAPIntf \'{\"vap\"\: \"cpe2gssid9\"}\'`
-		sleep 4
 	fi
 
 	ret=`ubus call WiFi.EndPoint.1 _set '{"parameters": {"Enable": "0"}}'`
@@ -1307,8 +1313,8 @@ get_interface_details()
 	CURRENT_6G_IFACE_NAME="6G"
 	CURRENT_5G_IFACE_NAME="5G"
 	CURRENT_24G_IFACE_NAME="24G"
-	CURRENT_6G_AP_PATH="WiFi.AccessPoint.18"
-	CURRENT_6G_SSID_PATH="WiFi.SSID.18"
+	CURRENT_6G_AP_PATH="WiFi.AccessPoint.15"
+	CURRENT_6G_SSID_PATH="WiFi.SSID.15"
 	if [ "$board" == "1" ]; then
 		CURRENT_6G_AP_PATH="WiFi.AccessPoint.3"
 		CURRENT_6G_SSID_PATH="WiFi.SSID.3"
@@ -1422,9 +1428,9 @@ add_interface()
 	ret=`eval ubus call WiFi addVAPIntf \'{\"vap\"\: \"$new_wlan\", \"radio\"\: \"radio${radio_idx}\", \"bridge\"\: \"br-lan\"}\'`
 	sleep 10
 
-	last_ap_idx=`ubus-cli 'WiFi.AccessPoint.?' | grep Alias | grep -v Point.1 | grep -v Point.9 | grep -v Point.17 | tail -1`
+	last_ap_idx=`ubus-cli 'WiFi.AccessPoint.?' | grep CustomAlias | grep -v Point.1 | grep -v Point.9 | grep -v Point.17 | tail -1`
 	last_ap_idx=${last_ap_idx##*Point.}
-	new_ap_idx=${last_ap_idx%%.Alias*}
+	new_ap_idx=${last_ap_idx%%.CustomAlias*}
 
 	new_ssid_idx=`ubus-cli 'WiFi.SSID.?' | grep Alias | grep -v SSID.1 | grep -v SSID.9 | grep -v SSID.17 | tail -1`
 	new_ssid_idx=${new_ssid_idx##*SSID.}
@@ -4403,8 +4409,8 @@ ap_set_wireless()
 			fi
 			string1="$CURRENT_SSID_PATH.SSID=$ap_ssid_cohosted_bss_index"
 			string2="$CURRENT_6G_SSID_PATH.SSID=$ap_ssid_cohosted_bss_index"
-			string3="$CURRENT_AP_PATH.Vendor.MLO.MloId=$ap_mld_id"
-			string4="$CURRENT_6G_AP_PATH.Vendor.MLO.MloId=$ap_mld_id"
+			string3="$CURRENT_SSID_PATH.MLDUnit=$ap_mld_id"
+			string4="$CURRENT_6G_SSID_PATH.MLDUnit=$ap_mld_id"
 			string5="exit"
 
 			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
@@ -4440,13 +4446,13 @@ ap_set_wireless()
 			if [ "$global_ap_mbssid" = "" -a "$ap_mld_id" = "" -a "$global_ap_cohosted_bss" = "" ]; then
 				mlo_counter=$((mlo_counter+1))
 				if [ "$ap_interface" = "24G" ]; then
-					ap_5g_mlo_id=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.MLO.MloId?`
+					ap_5g_mlo_id=`ubus-cli $CURRENT_5G_SSID_PATH.MLDUnit?`
 					ap_5g_mlo_id=`echo $ap_5g_mlo_id | cut -d"=" -f2`
-					ap_6g_mlo_id=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.MLO.MloId?`
+					ap_6g_mlo_id=`ubus-cli $CURRENT_6G_SSID_PATH.MLDUnit?`
 					ap_6g_mlo_id=`echo $ap_6g_mlo_id | cut -d"=" -f2`
 					if [ "$ap_5g_mlo_id" == "$mlo_id_counter" ]; then
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						mlo_id_counter=$((mlo_id_counter+1))
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
@@ -4454,7 +4460,7 @@ ap_set_wireless()
 						ML_VAP2="5G"
 					elif [ "$ap_6g_mlo_id" == "$mlo_id_counter" ]; then
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						mlo_id_counter=$((mlo_id_counter+1))
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
@@ -4463,19 +4469,19 @@ ap_set_wireless()
 					else
 						mlo_id_counter=$((mlo_id_counter+1))
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 					fi
 					sleep 5
 				elif [ "$ap_interface" = "5G" ]; then
-					ap_24g_mlo_id=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.MLO.MloId?`
+					ap_24g_mlo_id=`ubus-cli $CURRENT_24G_SSID_PATH.MLDUnit?`
 					ap_24g_mlo_id=`echo $ap_24g_mlo_id | cut -d"=" -f2`
-					ap_6g_mlo_id=`ubus-cli $CURRENT_6G_AP_PATH.Vendor.MLO.MloId?`
+					ap_6g_mlo_id=`ubus-cli $CURRENT_6G_SSID_PATH.MLDUnit?`
 					ap_6g_mlo_id=`echo $ap_6g_mlo_id | cut -d"=" -f2`
 					if [ "$ap_24g_mlo_id" == "$mlo_id_counter" ]; then
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						mlo_id_counter=$((mlo_id_counter+1))
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
@@ -4483,7 +4489,7 @@ ap_set_wireless()
 						ML_VAP2="5G"
 					elif [ "$ap_6g_mlo_id" == "$mlo_id_counter" ]; then
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						mlo_id_counter=$((mlo_id_counter+1))
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
@@ -4492,19 +4498,19 @@ ap_set_wireless()
 					else
 						mlo_id_counter=$((mlo_id_counter+1))
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 					fi
 					sleep 5
 				elif [ "$ap_interface" = "6G" ]; then
-					ap_24g_mlo_id=`ubus-cli $CURRENT_24G_AP_PATH.Vendor.MLO.MloId?`
+					ap_24g_mlo_id=`ubus-cli $CURRENT_24G_SSID_PATH.MLDUnit?`
 					ap_24g_mlo_id=`echo $ap_24g_mlo_id | cut -d"=" -f2`
-					ap_5g_mlo_id=`ubus-cli $CURRENT_5G_AP_PATH.Vendor.MLO.MloId?`
+					ap_5g_mlo_id=`ubus-cli $CURRENT_5G_SSID_PATH.MLDUnit?`
 					ap_5g_mlo_id=`echo $ap_5g_mlo_id | cut -d"=" -f2`
 					if [ "$ap_24g_mlo_id" == "$mlo_id_counter" ]; then
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						mlo_id_counter=$((mlo_id_counter+1))
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
@@ -4512,7 +4518,7 @@ ap_set_wireless()
 						ML_VAP2="6G"
 					elif [ "$ap_5g_mlo_id" == "$mlo_id_counter" ]; then
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						mlo_id_counter=$((mlo_id_counter+1))
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
@@ -4521,7 +4527,7 @@ ap_set_wireless()
 					else
 						mlo_id_counter=$((mlo_id_counter+1))
 						string1="$CURRENT_SSID_PATH.SSID=$glob_ssid"
-						string2="$CURRENT_AP_PATH.Vendor.MLO.MloId=$mlo_id_counter"
+						string2="$CURRENT_SSID_PATH.MLDUnit=$mlo_id_counter"
 						string3="exit"
 						ap_tmp=`echo -e "$string1\n$string2\n$string3" | ubus-cli`
 					fi
@@ -4961,18 +4967,18 @@ ap_set_security()
 	if [ "$mlo_counter" = "1" ] && [ "$global_ap_interface" != "" ]; then
 		if [ "$global_ap_interface" = "5G" ] || [ "$global_ap_interface" = "6G" ]; then
 			string1="$CURRENT_5G_SSID_PATH.SSID=$glob_ssid"
-			string2="$CURRENT_5G_AP_PATH.Vendor.MLO.MloId=1"
+			string2="$CURRENT_5G_SSID_PATH.MLDUnit=1"
 			string3="$CURRENT_6G_SSID_PATH.SSID=$glob_ssid"
-			string4="$CURRENT_6G_AP_PATH.Vendor.MLO.MloId=1"
+			string4="$CURRENT_6G_SSID_PATH.MLDUnit=1"
 			string5="exit"
 			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
 			ML_VAP1="5G"
 			ML_VAP2="6G"
 		else
 			string1="$CURRENT_5G_SSID_PATH.SSID=$glob_ssid"
-			string2="$CURRENT_5G_AP_PATH.Vendor.MLO.MloId=1"
+			string2="$CURRENT_5G_SSID_PATH.MLDUnit=1"
 			string3="$CURRENT_24G_SSID_PATH.SSID=$glob_ssid"
-			string4="$CURRENT_24G_AP_PATH.Vendor.MLO.MloId=1"
+			string4="$CURRENT_24G_SSID_PATH.MLDUnit=1"
 			string5="exit"
 			ap_tmp=`echo -e "$string1\n$string2\n$string3\n$string4\n$string5" | ubus-cli`
 			ML_VAP1="24G"

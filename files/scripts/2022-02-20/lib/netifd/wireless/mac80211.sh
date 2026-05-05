@@ -814,6 +814,7 @@ mac80211_hostapd_setup_base() {
 			fi
 		fi
 		[ -n "$he_oper_centr_freq_seg0_idx" ] && append base_cfg "he_oper_centr_freq_seg0_idx=$he_oper_centr_freq_seg0_idx" "$N"
+		append base_cfg "max_bss=16" "$N"
 	fi
 
 	if [ -n "$ieee80211ac" ]; then
