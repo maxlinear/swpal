@@ -1,6 +1,6 @@
 		option type 'mac80211'
 		option band '5GHz'
-		option channel 'auto'
+		option channel '36'
 		option hwmode '11anacax'
 		option htmode 'VHT80'
 		option disabled '0'
